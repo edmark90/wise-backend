@@ -1,0 +1,38 @@
+from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
+from typing import Optional
+from apps.model.collection_history import CollectionHistory
+
+def get_collection_history(
+    db: Session,
+    skip: int = 0,
+    limit: int = 10,
+    search: Optional[str] = None,
+    personnel_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """Get collection history with search and filters."""
+    query = db.query(CollectionHistory)
+    
+    if search:
+        query = query.filter(
+            or_(
+                CollectionHistory.area.ilike(f"%{search}%"),
+                CollectionHistory.remarks.ilike(f"%{search}%")
+            )
+        )
+    
+    if personnel_id:
+        query = query.filter(CollectionHistory.personnel_id == personnel_id)
+    
+    if start_date:
+        query = query.filter(CollectionHistory.collection_date >= start_date)
+    
+    if end_date:
+        query = query.filter(CollectionHistory.collection_date <= end_date)
+    
+    total = query.count()
+    history = query.order_by(CollectionHistory.collection_date.desc()).offset(skip).limit(limit).all()
+    
+    return {"history": history, "total": total}
