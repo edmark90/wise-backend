@@ -8,7 +8,7 @@ from apps.schemas.waste_record import (
     WasteRecordResponse,
     WasteRecordListResponse
 )
-from apps.services.waste_record_service import (
+from apps.services.waste_record import (
     get_waste_records,
     get_waste_record_by_id,
     create_waste_record,
@@ -16,7 +16,7 @@ from apps.services.waste_record_service import (
     delete_waste_record
 )
 from apps.utils.jwt import get_current_admin
-from apps.model.user import User
+from apps.models.user import User
 
 router = APIRouter()
 

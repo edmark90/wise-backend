@@ -1,7 +1,6 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
 from typing import Optional
-from apps.model.waste_record import WasteRecord
+from apps.models.waste_record import WasteRecord
 
 def get_waste_records(
     db: Session,

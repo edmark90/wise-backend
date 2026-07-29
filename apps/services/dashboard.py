@@ -1,11 +1,11 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
+
 from datetime import datetime, date
-from apps.model.user import User
-from apps.model.waste_record import WasteRecord
-from apps.model.collection_schedule import CollectionSchedule
-from apps.model.collection_history import CollectionHistory
-from apps.model.notification import Notification
+from apps.models.user import User
+from apps.models.waste_record import WasteRecord
+from apps.models.collection_schedule import CollectionSchedule
+from apps.models.collection_history import CollectionHistory
+from apps.models.notification import Notification
 
 def get_dashboard_stats(db: Session):
     """Get dashboard statistics."""
@@ -22,14 +22,18 @@ def get_dashboard_stats(db: Session):
         WasteRecord.confidence_score.isnot(None)
     ).count()
     
-    # Today's classifications
+    # Today's classifications (use range query for index performance)
+    today_start = datetime.combine(today, datetime.min.time())
+    today_end = datetime.combine(today, datetime.max.time())
     todays_classifications = db.query(WasteRecord).filter(
-        func.date(WasteRecord.created_at) == today
+        WasteRecord.created_at >= today_start,
+        WasteRecord.created_at <= today_end
     ).count()
     
-    # Today's collection schedule
+    # Today's collection schedule (use range query for index performance)
     todays_collection_schedule = db.query(CollectionSchedule).filter(
-        func.date(CollectionSchedule.collection_date) == today
+        CollectionSchedule.collection_date >= today_start,
+        CollectionSchedule.collection_date <= today_end
     ).count()
     
     # Pending collections

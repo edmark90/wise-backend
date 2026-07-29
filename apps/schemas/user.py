@@ -1,5 +1,7 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from datetime import datetime
+from pydantic import BaseModel, EmailStr, field_validator, field_serializer, ConfigDict
 from typing import Optional
+
 
 class UserCreate(BaseModel):
     fullname: str
@@ -23,6 +25,7 @@ class UserCreate(BaseModel):
             raise ValueError('Phone must contain only digits, +, -, or spaces')
         return v
 
+
 class UserUpdate(BaseModel):
     fullname: Optional[str] = None
     email: Optional[EmailStr] = None
@@ -37,14 +40,24 @@ class UserUpdate(BaseModel):
             raise ValueError('Phone must contain only digits, +, -, or spaces')
         return v
 
+
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     fullname: str
     email: str
-    phone: Optional[str]
+    phone: Optional[str] = None
     role: str
-    profile_image: Optional[str]
-    created_at: str
+    profile_image: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    @field_serializer('created_at')
+    def serialize_created_at(self, value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.isoformat()
+
 
 class UserListResponse(BaseModel):
     users: list[UserResponse]

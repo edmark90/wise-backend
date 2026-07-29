@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from apps.database import get_db
 from apps.schemas.dashboard import DashboardStats
-from apps.services.dashboard_service import get_dashboard_stats
+from apps.services.dashboard import get_dashboard_stats
 from apps.utils.jwt import get_current_admin
-from apps.model.user import User
+from apps.models.user import User
 
 router = APIRouter()
 

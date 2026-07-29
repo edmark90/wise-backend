@@ -3,9 +3,9 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from apps.database import get_db
 from apps.schemas.collection_history import CollectionHistoryResponse, CollectionHistoryListResponse
-from apps.services.collection_history_service import get_collection_history
+from apps.services.collection_history import get_collection_history
 from apps.utils.jwt import get_current_admin
-from apps.model.user import User
+from apps.models.user import User
 
 router = APIRouter()
 

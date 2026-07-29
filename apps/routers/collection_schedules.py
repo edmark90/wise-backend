@@ -8,7 +8,7 @@ from apps.schemas.collection_schedule import (
     CollectionScheduleResponse,
     CollectionScheduleListResponse
 )
-from apps.services.collection_schedule_service import (
+from apps.services.collection_schedule import (
     get_collection_schedules,
     get_collection_schedule_by_id,
     create_collection_schedule,
@@ -16,7 +16,7 @@ from apps.services.collection_schedule_service import (
     delete_collection_schedule
 )
 from apps.utils.jwt import get_current_admin
-from apps.model.user import User
+from apps.models.user import User
 
 router = APIRouter()
 

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 
 class AIGuideCreate(BaseModel):
@@ -18,6 +18,8 @@ class AIGuideUpdate(BaseModel):
     image_url: Optional[str] = None
 
 class AIGuideResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     waste_type: str
     guide_title: str

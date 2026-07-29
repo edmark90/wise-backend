@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 from typing import Optional
-from apps.model.collection_history import CollectionHistory
+from apps.models.collection_history import CollectionHistory
 
 def get_collection_history(
     db: Session,

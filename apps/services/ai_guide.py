@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
-from apps.model.ai_guide import AIGuide
+from apps.models.ai_guide import AIGuide
 
 def get_ai_guides(
     db: Session,

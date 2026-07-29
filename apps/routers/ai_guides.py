@@ -8,7 +8,7 @@ from apps.schemas.ai_guide import (
     AIGuideResponse,
     AIGuideListResponse
 )
-from apps.services.ai_guide_service import (
+from apps.services.ai_guide import (
     get_ai_guides,
     get_ai_guide_by_id,
     create_ai_guide,
@@ -16,7 +16,7 @@ from apps.services.ai_guide_service import (
     delete_ai_guide
 )
 from apps.utils.jwt import get_current_admin
-from apps.model.user import User
+from apps.models.user import User
 
 router = APIRouter()
 

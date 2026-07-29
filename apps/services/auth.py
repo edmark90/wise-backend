@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from apps.model.user import User
+from apps.models.user import User
 from apps.utils.password import verify_password
 from apps.utils.jwt import create_access_token
 
@@ -16,10 +16,6 @@ def login_user(db: Session, email: str, password: str):
     """Login a user and return access token."""
     user = authenticate_user(db, email, password)
     if not user:
-        return None
-    
-    # Only allow admin role to login to admin website
-    if user.role != "admin":
         return None
     
     access_token = create_access_token(data={"sub": str(user.id), "email": user.email, "role": user.role})

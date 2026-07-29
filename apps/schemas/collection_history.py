@@ -1,8 +1,10 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
 
 class CollectionHistoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     schedule_id: int
     personnel_id: Optional[int]

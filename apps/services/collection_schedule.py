@@ -1,7 +1,6 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
 from typing import Optional
-from apps.model.collection_schedule import CollectionSchedule
+from apps.models.collection_schedule import CollectionSchedule
 
 def get_collection_schedules(
     db: Session,

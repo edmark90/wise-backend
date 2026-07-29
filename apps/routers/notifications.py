@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional
 from apps.database import get_db
@@ -8,7 +9,7 @@ from apps.schemas.notification import (
     NotificationResponse,
     NotificationListResponse
 )
-from apps.services.notification_service import (
+from apps.services.notification import (
     get_notifications,
     get_notification_by_id,
     create_notification,
@@ -18,7 +19,7 @@ from apps.services.notification_service import (
     mark_all_as_read
 )
 from apps.utils.jwt import get_current_admin
-from apps.model.user import User
+from apps.models.user import User
 
 router = APIRouter()
 
@@ -55,8 +56,11 @@ def get_unread_count(
     current_user: User = Depends(get_current_admin)
 ):
     """Get total unread notifications count."""
-    result = get_notifications(db, skip=0, limit=1)
-    return {"unread_count": result["unread_count"]}
+    from apps.models.notification import Notification
+    unread_count = db.query(func.count(Notification.id)).filter(
+        Notification.is_read == False
+    ).scalar()
+    return {"unread_count": unread_count}
 
 @router.get("/{notification_id}", response_model=NotificationResponse)
 def get_notification(

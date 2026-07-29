@@ -6,11 +6,10 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from apps.config import SECRET_KEY
 from apps.database import get_db
-from apps.model.user import User
-
-SECRET_KEY = SECRET_KEY
+from apps.models.user import User
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 security = HTTPBearer()
 
@@ -24,6 +23,18 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+def create_refresh_token(user_id: int, email: str, role: str):
+    """Create a refresh token with longer expiry."""
+    to_encode = {
+        "sub": str(user_id),
+        "email": email,
+        "role": role,
+        "type": "refresh"
+    }
+    expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def decode_access_token(token: str):
     """Decode and verify a JWT access token."""

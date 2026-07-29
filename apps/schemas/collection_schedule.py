@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
 
@@ -17,6 +17,8 @@ class CollectionScheduleUpdate(BaseModel):
     remarks: Optional[str] = None
 
 class CollectionScheduleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     personnel_id: Optional[int]
     collection_date: datetime

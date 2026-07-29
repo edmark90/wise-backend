@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
 
@@ -18,6 +18,8 @@ class WasteRecordUpdate(BaseModel):
     status: Optional[str] = None
 
 class WasteRecordResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     user_id: int
     waste_type: str

@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import Optional
-from apps.model.notification import Notification
+from apps.models.notification import Notification
 
 def get_notifications(
     db: Session,
@@ -19,7 +20,9 @@ def get_notifications(
         query = query.filter(Notification.is_read == is_read)
     
     total = query.count()
-    unread_count = db.query(Notification).filter(Notification.is_read == False).count()
+    unread_count = db.query(func.count(Notification.id)).filter(
+        Notification.is_read == False
+    ).scalar() or 0
     notifications = query.order_by(Notification.created_at.desc()).offset(skip).limit(limit).all()
     
     return {"notifications": notifications, "total": total, "unread_count": unread_count}

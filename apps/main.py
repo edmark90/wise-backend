@@ -11,6 +11,7 @@ from apps.routers.collection_schedules import router as collection_schedules_rou
 from apps.routers.collection_history import router as collection_history_router
 from apps.routers.notifications import router as notifications_router
 from apps.routers.ai_guides import router as ai_guides_router
+from apps.middleware.rate_limiter import rate_limiting_middleware
 from apps.middleware.error_handler import (
     AppException,
     app_exception_handler,
@@ -31,6 +32,9 @@ app.add_exception_handler(IntegrityError, integrity_error_handler)
 app.add_exception_handler(Exception, generic_exception_handler)
 
 # CORS configuration
+# Rate limiting middleware (applied first for early rejection)
+app.middleware("http")(rate_limiting_middleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,8 +53,6 @@ app.include_router(notifications_router, prefix="/api/notifications", tags=["Not
 app.include_router(ai_guides_router, prefix="/api/ai-guides", tags=["AI Guides"])
 
 @app.get("/")
-
-
 def root():
     return {
         "message": "WISE Backend API is Running!"

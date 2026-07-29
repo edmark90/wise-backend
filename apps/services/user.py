@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-from typing import Optional, List
-from apps.model.user import User
+from typing import Optional
+from apps.models.user import User
 from apps.utils.password import hash_password
 
 def get_users(

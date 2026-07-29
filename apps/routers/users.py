@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from apps.database import get_db
 from apps.schemas.user import UserCreate, UserUpdate, UserResponse, UserListResponse
-from apps.services.user_service import (
+from apps.services.user import (
     get_users,
     get_user_by_id,
     create_user,
@@ -11,7 +11,7 @@ from apps.services.user_service import (
     delete_user
 )
 from apps.utils.jwt import get_current_admin
-from apps.model.user import User
+from apps.models.user import User
 
 router = APIRouter()
 
