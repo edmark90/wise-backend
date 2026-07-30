@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy import or_
 from typing import Optional
 from apps.models.user import User
@@ -11,8 +11,13 @@ def get_users(
     search: Optional[str] = None,
     role: Optional[str] = None
 ):
-    """Get users with pagination, search, and role filtering."""
-    query = db.query(User)
+    """Get users with pagination, search, and role filtering.
+    Only selects essential columns (id, fullname, email, role) for list performance.
+    """
+    # Use load_only to avoid SELECT * and skip password_hash, phone, profile_image, timestamps
+    query = db.query(User).options(
+        load_only(User.id, User.fullname, User.email, User.role)
+    )
     
     if search:
         query = query.filter(
@@ -27,7 +32,7 @@ def get_users(
         query = query.filter(User.role == role)
     
     total = query.count()
-    users = query.offset(skip).limit(limit).all()
+    users = query.order_by(User.id.asc()).offset(skip).limit(limit).all()
     
     return {"users": users, "total": total}
 

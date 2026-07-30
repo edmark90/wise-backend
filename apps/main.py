@@ -31,14 +31,17 @@ app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(IntegrityError, integrity_error_handler)
 app.add_exception_handler(Exception, generic_exception_handler)
 
-# CORS configuration
 # Rate limiting middleware (applied first for early rejection)
 app.middleware("http")(rate_limiting_middleware)
 
+# CORS configuration
+# This API uses JWT Bearer tokens (Authorization header), not cookies,
+# so allow_credentials is set to False to allow allow_origins=["*"] per CORS spec.
+# In production, replace * with specific frontend domains if needed.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

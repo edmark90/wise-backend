@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional
 from apps.database import get_db
@@ -14,9 +13,7 @@ from apps.services.notification import (
     get_notification_by_id,
     create_notification,
     update_notification,
-    delete_notification,
-    mark_as_read,
-    mark_all_as_read
+    delete_notification
 )
 from apps.utils.jwt import get_current_admin
 from apps.models.user import User
@@ -27,40 +24,29 @@ router = APIRouter()
 def list_notifications(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
-    user_id: Optional[int] = None,
-    is_read: Optional[bool] = None,
+    created_by: Optional[int] = None,
+    target: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin)
 ):
-    """Get all notifications with filtering and pagination."""
+    """Get all notifications with filtering and pagination.
+    Filters: created_by (admin ID), target (e.g. 'All', specific barangay).
+    """
     skip = (page - 1) * page_size
     result = get_notifications(
         db,
         skip=skip,
         limit=page_size,
-        user_id=user_id,
-        is_read=is_read
+        created_by=created_by,
+        target=target
     )
     
     return {
         "notifications": result["notifications"],
         "total": result["total"],
-        "unread_count": result["unread_count"],
         "page": page,
         "page_size": page_size
     }
-
-@router.get("/unread-count")
-def get_unread_count(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin)
-):
-    """Get total unread notifications count."""
-    from apps.models.notification import Notification
-    unread_count = db.query(func.count(Notification.id)).filter(
-        Notification.is_read == False
-    ).scalar()
-    return {"unread_count": unread_count}
 
 @router.get("/{notification_id}", response_model=NotificationResponse)
 def get_notification(
@@ -83,8 +69,12 @@ def create_new_notification(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin)
 ):
-    """Create a new notification."""
-    notification = create_notification(db, notification_data.model_dump())
+    """Create a new notification (broadcast to all or specific target).
+    Sets created_by to the current admin automatically.
+    """
+    data = notification_data.model_dump()
+    data["created_by"] = current_user.id
+    notification = create_notification(db, data)
     return notification
 
 @router.put("/{notification_id}", response_model=NotificationResponse)
@@ -102,31 +92,6 @@ def update_existing_notification(
             detail="Notification not found"
         )
     return notification
-
-@router.patch("/{notification_id}/mark-read", response_model=NotificationResponse)
-def mark_notification_as_read(
-    notification_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin)
-):
-    """Mark a notification as read."""
-    notification = mark_as_read(db, notification_id)
-    if not notification:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Notification not found"
-        )
-    return notification
-
-@router.patch("/mark-all-read")
-def mark_all_notifications_as_read(
-    user_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin)
-):
-    """Mark all notifications for a user as read."""
-    result = mark_all_as_read(db, user_id)
-    return {"success": result}
 
 @router.delete("/{notification_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_existing_notification(

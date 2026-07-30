@@ -41,7 +41,18 @@ class UserUpdate(BaseModel):
         return v
 
 
+class UserListItem(BaseModel):
+    """Lightweight user schema for list views - only essential fields."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    fullname: str
+    email: str
+    role: str
+
+
 class UserResponse(BaseModel):
+    """Full user schema for detail views."""
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -60,7 +71,7 @@ class UserResponse(BaseModel):
 
 
 class UserListResponse(BaseModel):
-    users: list[UserResponse]
+    users: list[UserListItem]
     total: int
     page: int
     page_size: int

@@ -1,16 +1,15 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Float
+from sqlalchemy import Column, Integer, String, DateTime, Text, Numeric
 from sqlalchemy.sql import func
 from apps.database import Base
 
 class WasteRecord(Base):
+    """Matches actual DB schema: waste_records table."""
     __tablename__ = "waste_records"
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False)
-    waste_type = Column(String(50), nullable=False)
-    image_url = Column(String(255))
-    confidence_score = Column(Float)
-    location = Column(String(255))
-    status = Column(String(20), default="pending")
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    image_url = Column(Text, nullable=False)
+    waste_type = Column(String(100), nullable=False)
+    disposal_category = Column(String(50), nullable=False)
+    confidence = Column(Numeric(5, 2), nullable=True)
+    classified_at = Column(DateTime, server_default=func.now())

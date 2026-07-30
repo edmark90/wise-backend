@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from datetime import datetime, date
 from apps.models.user import User
@@ -8,46 +9,46 @@ from apps.models.collection_history import CollectionHistory
 from apps.models.notification import Notification
 
 def get_dashboard_stats(db: Session):
-    """Get dashboard statistics."""
+    """Get dashboard statistics.
+    All counts use COUNT() aggregate queries — never retrieves full records.
+    Matches actual DB schema (classified_at, confidence, disposal_category).
+    """
     today = date.today()
     
     # Total users
-    total_users = db.query(User).count()
+    total_users = db.query(func.count(User.id)).scalar() or 0
     
     # Total waste records
-    total_waste_records = db.query(WasteRecord).count()
+    total_waste_records = db.query(func.count(WasteRecord.id)).scalar() or 0
     
     # Total AI classifications (waste records with confidence score)
-    total_ai_classifications = db.query(WasteRecord).filter(
-        WasteRecord.confidence_score.isnot(None)
-    ).count()
+    total_ai_classifications = db.query(func.count(WasteRecord.id)).filter(
+        WasteRecord.confidence.isnot(None)
+    ).scalar() or 0
     
-    # Today's classifications (use range query for index performance)
+    # Today's classifications — using classified_at column
     today_start = datetime.combine(today, datetime.min.time())
     today_end = datetime.combine(today, datetime.max.time())
-    todays_classifications = db.query(WasteRecord).filter(
-        WasteRecord.created_at >= today_start,
-        WasteRecord.created_at <= today_end
-    ).count()
+    todays_classifications = db.query(func.count(WasteRecord.id)).filter(
+        WasteRecord.classified_at >= today_start,
+        WasteRecord.classified_at <= today_end
+    ).scalar() or 0
     
-    # Today's collection schedule (use range query for index performance)
-    todays_collection_schedule = db.query(CollectionSchedule).filter(
-        CollectionSchedule.collection_date >= today_start,
-        CollectionSchedule.collection_date <= today_end
-    ).count()
+    # Today's collection schedule
+    todays_collection_schedule = db.query(func.count(CollectionSchedule.id)).filter(
+        CollectionSchedule.collection_date == today
+    ).scalar() or 0
     
-    # Pending collections
-    pending_collections = db.query(CollectionSchedule).filter(
-        CollectionSchedule.status == "pending"
-    ).count()
+    # Upcoming collections
+    upcoming_collections = db.query(func.count(CollectionSchedule.id)).filter(
+        CollectionSchedule.status == "Upcoming"
+    ).scalar() or 0
     
     # Completed collections (from history)
-    completed_collections = db.query(CollectionHistory).count()
+    completed_collections = db.query(func.count(CollectionHistory.id)).scalar() or 0
     
-    # Unread notifications
-    unread_notifications = db.query(Notification).filter(
-        Notification.is_read == False
-    ).count()
+    # Total notifications (no is_read column in actual DB)
+    total_notifications = db.query(func.count(Notification.id)).scalar() or 0
     
     return {
         "total_users": total_users,
@@ -55,7 +56,7 @@ def get_dashboard_stats(db: Session):
         "total_ai_classifications": total_ai_classifications,
         "todays_classifications": todays_classifications,
         "todays_collection_schedule": todays_collection_schedule,
-        "pending_collections": pending_collections,
+        "upcoming_collections": upcoming_collections,
         "completed_collections": completed_collections,
-        "unread_notifications": unread_notifications
+        "total_notifications": total_notifications
     }

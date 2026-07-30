@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy import or_
 from typing import Optional
 from apps.models.collection_history import CollectionHistory
@@ -12,8 +12,18 @@ def get_collection_history(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None
 ):
-    """Get collection history with search and filters."""
-    query = db.query(CollectionHistory)
+    """Get collection history with search and filters.
+    Only selects essential columns for list performance.
+    """
+    query = db.query(CollectionHistory).options(
+        load_only(
+            CollectionHistory.id,
+            CollectionHistory.schedule_id,
+            CollectionHistory.collection_date,
+            CollectionHistory.area,
+            CollectionHistory.waste_collected_kg
+        )
+    )
     
     if search:
         query = query.filter(

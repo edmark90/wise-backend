@@ -3,29 +3,39 @@ from typing import Optional
 from datetime import datetime
 
 class NotificationCreate(BaseModel):
-    user_id: int
     title: str
     message: str
-    is_read: bool = False
+    target: str = "All"
+    created_by: Optional[int] = None
 
 class NotificationUpdate(BaseModel):
     title: Optional[str] = None
     message: Optional[str] = None
-    is_read: Optional[bool] = None
+    target: Optional[str] = None
 
-class NotificationResponse(BaseModel):
+
+class NotificationListItem(BaseModel):
+    """Lightweight notification schema for list views."""
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    user_id: int
+    message: str
+    created_at: datetime
+
+
+class NotificationResponse(BaseModel):
+    """Full notification schema for detail views."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
     title: str
     message: str
-    is_read: bool
+    target: Optional[str] = None
+    created_by: Optional[int] = None
     created_at: datetime
 
 class NotificationListResponse(BaseModel):
-    notifications: list[NotificationResponse]
+    notifications: list[NotificationListItem]
     total: int
-    unread_count: int
     page: int
     page_size: int

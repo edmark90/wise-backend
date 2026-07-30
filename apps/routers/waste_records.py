@@ -24,22 +24,27 @@ router = APIRouter()
 def list_waste_records(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
+    search: Optional[str] = None,
     waste_type: Optional[str] = None,
-    status: Optional[str] = None,
+    disposal_category: Optional[str] = None,
     user_id: Optional[int] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin)
 ):
-    """Get all waste records with filtering and pagination."""
+    """Get all waste records with filtering, search, and pagination.
+    Returns only essential fields (id, fullname, waste_type, classification, created_at).
+    Filters: waste_type, disposal_category (Biodegradable/Non-Biodegradable/Recyclable/Hazardous).
+    """
     skip = (page - 1) * page_size
     result = get_waste_records(
         db,
         skip=skip,
         limit=page_size,
+        search=search,
         waste_type=waste_type,
-        status=status,
+        disposal_category=disposal_category,
         user_id=user_id,
         start_date=start_date,
         end_date=end_date
