@@ -4,11 +4,13 @@ from apps.utils.password import verify_password
 from apps.utils.jwt import create_access_token
 
 def authenticate_user(db: Session, email: str, password: str):
-    """Authenticate a user by email and password."""
+    """Authenticate a user by email and password. Returns None for invalid or disabled accounts."""
     user = db.query(User).filter(User.email == email).first()
     if not user:
         return None
     if not verify_password(password, user.password_hash):
+        return None
+    if not user.is_active:
         return None
     return user
 

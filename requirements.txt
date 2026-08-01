@@ -7,3 +7,4 @@ python-jose[cryptography]==3.3.0
 SQLAlchemy==2.0.51
 uvicorn==0.51.0
 email-validator>=2.0.0
+python-multipart==0.0.32

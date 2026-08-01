@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean
 from sqlalchemy.sql import func
 
 from apps.database import Base
@@ -14,5 +14,8 @@ class User(Base):
     phone = Column(String(20))
     role = Column(String(20), default="citizen")
     profile_image = Column(Text, nullable=True)
+    barangay = Column(String(100), nullable=True)
+    zone = Column(String(100), nullable=True)
+    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

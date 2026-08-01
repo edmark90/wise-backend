@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, field_validator, field_serializer, ConfigDict
+from pydantic import BaseModel, EmailStr, field_validator, field_serializer, ConfigDict, model_validator
 from typing import Optional
 
 
@@ -10,6 +10,7 @@ class UserCreate(BaseModel):
     phone: Optional[str] = None
     role: str = "citizen"
     profile_image: Optional[str] = None
+    is_active: bool = True
 
     @field_validator('password')
     @classmethod
@@ -32,6 +33,7 @@ class UserUpdate(BaseModel):
     phone: Optional[str] = None
     role: Optional[str] = None
     profile_image: Optional[str] = None
+    is_active: Optional[bool] = None
 
     @field_validator('phone')
     @classmethod
@@ -48,7 +50,17 @@ class UserListItem(BaseModel):
     id: int
     fullname: str
     email: str
+    phone: Optional[str] = None
     role: str
+    profile_image: Optional[str] = None
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+
+    @field_serializer('created_at')
+    def serialize_created_at(self, value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.isoformat()
 
 
 class UserResponse(BaseModel):
@@ -61,6 +73,7 @@ class UserResponse(BaseModel):
     phone: Optional[str] = None
     role: str
     profile_image: Optional[str] = None
+    is_active: bool = True
     created_at: Optional[datetime] = None
 
     @field_serializer('created_at')
@@ -75,3 +88,40 @@ class UserListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class ProfileUpdate(BaseModel):
+    """Self-service profile updates for the logged-in citizen.
+
+    Email is intentionally excluded - it cannot be edited by the user.
+    """
+    fullname: Optional[str] = None
+    phone: Optional[str] = None
+    barangay: Optional[str] = None
+    zone: Optional[str] = None
+
+    @field_validator('phone')
+    @classmethod
+    def validate_phone(cls, v):
+        if v and not v.isdigit() and not v.replace('+', '').replace('-', '').replace(' ', '').isdigit():
+            raise ValueError('Phone must contain only digits, +, -, or spaces')
+        return v
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('New password must be at least 8 characters long')
+        return v
+
+    @model_validator(mode='after')
+    def passwords_match(self):
+        if self.new_password != self.confirm_password:
+            raise ValueError('New password and confirmation do not match')
+        return self

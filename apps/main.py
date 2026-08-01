@@ -1,9 +1,14 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import IntegrityError
-from apps.database import test_connection
+from sqlalchemy import text
+from apps.database import test_connection, engine
 from apps.routers.auth import router as auth_router
+from apps.routers.profile import router as profile_router, UPLOAD_ROOT
 from apps.routers.users import router as users_router
 from apps.routers.dashboard import router as dashboard_router
 from apps.routers.waste_records import router as waste_records_router
@@ -24,6 +29,32 @@ app = FastAPI(
     title="WISE Backend API",
     version="1.0.0"
 )
+
+def ensure_schema():
+    """Idempotent startup migration: add missing columns to the users table."""
+    try:
+        with engine.connect() as conn:
+            cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM users"))]
+            if "is_active" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1"))
+                conn.commit()
+                print("[schema] Added users.is_active column")
+            if "barangay" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN barangay VARCHAR(100) NULL"))
+                conn.commit()
+                print("[schema] Added users.barangay column")
+            if "zone" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN zone VARCHAR(100) NULL"))
+                conn.commit()
+                print("[schema] Added users.zone column")
+    except Exception as e:
+        print(f"[schema] Migration skipped: {e}")
+
+ensure_schema()
+
+# Uploads directory for profile pictures (created automatically if missing)
+os.makedirs(os.path.join(UPLOAD_ROOT, "profile"), exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 
 # Exception handlers
 app.add_exception_handler(AppException, app_exception_handler)
@@ -47,6 +78,8 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
+# Profile router first so /api/users/profile/* is not shadowed by /api/users/{user_id}
+app.include_router(profile_router, prefix="/api/users", tags=["Profile"])
 app.include_router(users_router, prefix="/api/users", tags=["Users"])
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["Dashboard"])
 app.include_router(waste_records_router, prefix="/api/waste-records", tags=["Waste Records"])

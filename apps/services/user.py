@@ -14,9 +14,9 @@ def get_users(
     """Get users with pagination, search, and role filtering.
     Only selects essential columns (id, fullname, email, role) for list performance.
     """
-    # Use load_only to avoid SELECT * and skip password_hash, phone, profile_image, timestamps
+    # Use load_only to avoid SELECT * and skip password_hash and profile_image
     query = db.query(User).options(
-        load_only(User.id, User.fullname, User.email, User.role)
+        load_only(User.id, User.fullname, User.email, User.phone, User.role, User.is_active, User.created_at)
     )
     
     if search:
