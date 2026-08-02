@@ -31,9 +31,32 @@ app = FastAPI(
 )
 
 def ensure_schema():
-    """Idempotent startup migration: add missing columns to the users table."""
+    """Idempotent startup migrations for new notification tables/columns."""
     try:
         with engine.connect() as conn:
+            # New tables
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS device_tokens (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    token VARCHAR(512) NOT NULL UNIQUE,
+                    platform VARCHAR(20) DEFAULT 'android',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS notification_reads (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    notification_id INT NOT NULL,
+                    user_id INT NOT NULL,
+                    read_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB
+            """))
+            conn.commit()
+            print("[schema] Ensured device_tokens / notification_reads tables")
+
+            # users columns
             cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM users"))]
             if "is_active" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1"))
@@ -47,6 +70,56 @@ def ensure_schema():
                 conn.execute(text("ALTER TABLE users ADD COLUMN zone VARCHAR(100) NULL"))
                 conn.commit()
                 print("[schema] Added users.zone column")
+            user_prefs = {
+                "notif_collection_updates": "TINYINT(1) NOT NULL DEFAULT 1",
+                "notif_route_updates": "TINYINT(1) NOT NULL DEFAULT 1",
+                "notif_announcements": "TINYINT(1) NOT NULL DEFAULT 1",
+                "notif_emergency_alerts": "TINYINT(1) NOT NULL DEFAULT 1",
+                "notif_reminders": "TINYINT(1) NOT NULL DEFAULT 1",
+                "notif_completed_collection": "TINYINT(1) NOT NULL DEFAULT 1",
+            }
+            for pref, ddl in user_prefs.items():
+                if pref not in cols:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {pref} {ddl}"))
+            conn.commit()
+            print("[schema] Added users notification preference columns")
+            if "preferred_barangays" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN preferred_barangays TEXT NULL"))
+                conn.commit()
+                print("[schema] Added users.preferred_barangays column")
+
+            # notifications columns
+            n_cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM notifications"))]
+            notif_columns = {
+                "notification_type": "VARCHAR(50) NULL",
+                "category": "VARCHAR(50) NULL",
+                "schedule_id": "INT NULL",
+                "route_name": "VARCHAR(255) NULL",
+                "starting_point": "VARCHAR(255) NULL",
+                "affected_barangays": "TEXT NULL",
+                "collection_date": "VARCHAR(20) NULL",
+                "collection_time": "VARCHAR(20) NULL",
+                "assigned_personnel": "VARCHAR(255) NULL",
+                "reason": "VARCHAR(255) NULL",
+                "reason_other": "VARCHAR(255) NULL",
+                "additional_message": "TEXT NULL",
+                "priority": "VARCHAR(20) DEFAULT 'Normal'",
+                "recipients": "TEXT NULL",
+                "status": "VARCHAR(20) DEFAULT 'Sent'",
+                "created_by_name": "VARCHAR(100) NULL",
+            }
+            for col, ddl in notif_columns.items():
+                if col not in n_cols:
+                    conn.execute(text(f"ALTER TABLE notifications ADD COLUMN {col} {ddl}"))
+            conn.commit()
+
+            # collection_schedule columns
+            s_cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM collection_schedule"))]
+            if "route_name" not in s_cols:
+                conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN route_name VARCHAR(255) NULL"))
+            if "starting_point" not in s_cols:
+                conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN starting_point VARCHAR(255) NULL"))
+            conn.commit()
     except Exception as e:
         print(f"[schema] Migration skipped: {e}")
 

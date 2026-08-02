@@ -17,5 +17,19 @@ class User(Base):
     barangay = Column(String(100), nullable=True)
     zone = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
+
+    # Notification preferences (mobile settings)
+    notif_collection_updates = Column(Boolean, default=True)
+    notif_route_updates = Column(Boolean, default=True)
+    notif_announcements = Column(Boolean, default=True)
+    notif_emergency_alerts = Column(Boolean, default=True)
+    notif_reminders = Column(Boolean, default=True)
+    notif_completed_collection = Column(Boolean, default=True)
+
+    # Preferred barangays for notification targeting (JSON list of names).
+    # The mobile Notification Settings page lets a citizen subscribe to one or
+    # more barangays; delivery is matched against these (never admin-chosen).
+    preferred_barangays = Column(Text, nullable=True)
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -8,6 +8,8 @@ class CollectionSchedule(Base):
     id = Column(Integer, primary_key=True, index=True)
     barangay = Column(String(100), nullable=False)
     zone = Column(String(50), nullable=False, default="")
+    route_name = Column(String(255), nullable=True)
+    starting_point = Column(String(255), nullable=True)
     collection_date = Column(Date, nullable=False)
     collection_time = Column(Time, nullable=False)
     assigned_personnel = Column(String(255), nullable=False, default="")

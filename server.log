@@ -1,0 +1,3 @@
+[push] Firebase Admin initialized - FCM push ENABLED
+[schema] Ensured device_tokens / notification_reads tables
+[schema] Added users notification preference columns

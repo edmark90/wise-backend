@@ -5,20 +5,35 @@ from datetime import date, time, datetime
 class CollectionScheduleCreate(BaseModel):
     barangay: str
     zone: str = ""
+    route_name: Optional[str] = None
+    starting_point: Optional[str] = None
     collection_date: date
     collection_time: time
     assigned_personnel: str = ""
     status: str = "Upcoming"
     remarks: Optional[str] = None
 
+class BatchScheduleCreate(BaseModel):
+    schedules: list[CollectionScheduleCreate]
+
 class CollectionScheduleUpdate(BaseModel):
     barangay: Optional[str] = None
     zone: Optional[str] = None
+    route_name: Optional[str] = None
+    starting_point: Optional[str] = None
     collection_date: Optional[date] = None
     collection_time: Optional[time] = None
     assigned_personnel: Optional[str] = None
     status: Optional[str] = None
     remarks: Optional[str] = None
+    reason: Optional[str] = None
+    reason_other: Optional[str] = None
+
+class ScheduleStatusUpdate(BaseModel):
+    status: str
+    reason: Optional[str] = None
+    reason_other: Optional[str] = None
+    additional_message: Optional[str] = None
 
 
 class CollectionScheduleListItem(BaseModel):
@@ -28,6 +43,8 @@ class CollectionScheduleListItem(BaseModel):
     id: int
     barangay: str
     zone: str
+    route_name: Optional[str] = None
+    starting_point: Optional[str] = None
     collection_date: date
     collection_time: time
     assigned_personnel: str
@@ -41,6 +58,8 @@ class CollectionScheduleResponse(BaseModel):
     id: int
     barangay: str
     zone: str
+    route_name: Optional[str] = None
+    starting_point: Optional[str] = None
     collection_date: date
     collection_time: time
     assigned_personnel: str
