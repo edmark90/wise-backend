@@ -16,7 +16,7 @@ class Notification(Base):
     message = Column(Text, nullable=False)
     notification_type = Column(String(50), nullable=True, default="Manual Announcement")
     category = Column(String(50), nullable=True)
-    target = Column(String(100), default="All")
+    target = Column(Text, default="All")
     schedule_id = Column(Integer, nullable=True)
     route_name = Column(String(255), nullable=True)
     starting_point = Column(String(255), nullable=True)

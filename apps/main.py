@@ -111,7 +111,10 @@ def ensure_schema():
             for col, ddl in notif_columns.items():
                 if col not in n_cols:
                     conn.execute(text(f"ALTER TABLE notifications ADD COLUMN {col} {ddl}"))
-            conn.commit()
+            if "target" in n_cols:
+                conn.execute(text("ALTER TABLE notifications MODIFY COLUMN target TEXT"))
+                conn.commit()
+                print("[schema] Enlarged notifications.target to TEXT")
 
             # collection_schedule columns
             s_cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM collection_schedule"))]
