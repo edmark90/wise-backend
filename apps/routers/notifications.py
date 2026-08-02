@@ -165,7 +165,11 @@ def update_notification_settings(
 
 
 def _preferred_barangays(user) -> list:
-    """Decode the user's preferred barangays JSON (falls back to legacy barangay)."""
+    """Decode the user's preferred barangays JSON.
+
+    Returns an empty list when the user has never saved an explicit
+    preference so the mobile client defaults to "all barangays selected".
+    """
     raw = getattr(user, "preferred_barangays", None)
     if raw:
         try:
@@ -176,7 +180,7 @@ def _preferred_barangays(user) -> list:
                     return names
         except Exception:
             pass
-    return [user.barangay] if getattr(user, "barangay", None) else []
+    return []
 
 
 @router.get("/{notification_id}", response_model=NotificationResponse)

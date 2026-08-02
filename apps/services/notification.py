@@ -384,8 +384,9 @@ def create_manual_announcement(db: Session, data: dict, current_user: User):
 def _user_preferred_barangays(user: User) -> List[str]:
     """A citizen's preferred barangays from mobile settings.
 
-    Falls back to the legacy single `barangay` field when the JSON list is
-    empty/missing so existing accounts keep receiving notifications.
+    Returns an empty list when nothing is saved yet. Callers must treat an
+    empty list as "all barangays" so a fresh install receives every barangay
+    by default (matching the mobile's all-selected default).
     """
     raw = user.preferred_barangays
     if raw:
@@ -397,13 +398,14 @@ def _user_preferred_barangays(user: User) -> List[str]:
                     return names
         except Exception:
             pass
-    if user.barangay:
-        return [user.barangay]
     return []
 
 def _matching_citizens(db: Session, barangays: List[str], pref: str) -> List[int]:
     """Citizens whose preferred barangays intersect the affected barangays,
-    honoring the given preference toggle (OFF citizens are skipped)."""
+    honoring the given preference toggle (OFF citizens are skipped).
+
+    Citizens with no saved preference (empty list) are treated as subscribed
+    to every barangay — they match any affected barangay."""
     barangays = [b for b in barangays if b]
     if not barangays:
         return []
@@ -415,7 +417,7 @@ def _matching_citizens(db: Session, barangays: List[str], pref: str) -> List[int
     matched = []
     for u in users:
         prefs = _user_preferred_barangays(u)
-        if any(b in prefs for b in barangays):
+        if not prefs or any(b in prefs for b in barangays):
             matched.append(u.id)
     return matched
 
@@ -560,8 +562,13 @@ def delete_notification(db: Session, notification_id: int):
 
 def _user_scope(db: Session, user: User, query):
     """Notifications a citizen should see: targeted to any of their preferred
-    barangays, or broadcast to everyone ('All')."""
+    barangays, or broadcast to everyone ('All').
+
+    A citizen with no saved preference (empty list) is subscribed to every
+    barangay, so they see every notification."""
     prefs = _user_preferred_barangays(user)
+    if not prefs:
+        return query
     clauses = [Notification.target == "All"]
     for b in prefs:
         clauses.append(Notification.affected_barangays.like(f'%"{b}"%'))
