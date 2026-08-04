@@ -18,6 +18,7 @@ MANUAL_TYPES = [
     "General Announcement",
     "Delayed Collection",
     "Cancelled Collection",
+    "Mobile Update",
 ]
 
 # Automatic notification types — generated from the Collection Schedule module.
@@ -56,6 +57,7 @@ PREFERENCE_FOR_TYPE = {
     "Collection Completed": "notif_completed_collection",
     "Collection Rescheduled": "notif_collection_updates",
     "General Announcement": "notif_announcements",
+    "Mobile Update": "notif_announcements",
 }
 
 def _route_name(schedule: CollectionSchedule) -> str:
@@ -454,6 +456,36 @@ def _push_to_barangays(db: Session, affected: List[str], title: str,
         {"id": str(notification.id), "type": ntype},
     )
 
+
+def _push_app_update(db: Session, title: str, message: str, notification: Notification, version: str, apk_url: str, force: bool, version_code: int, reminder: str = "None") -> int:
+    """Send push notification with app update payload data."""
+    user_ids = [
+        u[0] for u in db.query(User.id).filter(
+            User.role == "citizen",
+            User.is_active.is_(True),
+            getattr(User, "notif_announcements").is_(True),
+        ).all()
+    ]
+    if not user_ids:
+        return 0
+    tokens = [t[0] for t in db.query(DeviceToken.token).filter(DeviceToken.user_id.in_(user_ids)).all()]
+    if not tokens:
+        return 0
+    payload = {
+        "type": "app_update",
+        "id": str(notification.id),
+        "title": title,
+        "message": message,
+        "version": version,
+        "version_code": str(version_code),
+        "apk_url": apk_url,
+        "force": "true" if force else "false",
+        "reminder": reminder
+    }
+    return send_push_notifications(tokens, title, message, payload)
+
+
+
 # ---------------------------------------------------------------------------
 # Queries (admin)
 # ---------------------------------------------------------------------------
@@ -577,8 +609,10 @@ def _user_scope(db: Session, user: User, query):
 
 
 def get_my_notifications(db: Session, user: User, limit: int = 50):
-    """Notifications relevant to a citizen + read state."""
+    """Notifications relevant to a citizen + read state.
+    Excludes 'Mobile Update' type — those are dialog-only."""
     query = _user_scope(db, user, db.query(Notification))
+    query = query.filter(Notification.notification_type != "Mobile Update")
     notifications = query.order_by(Notification.created_at.desc()).limit(limit).all()
     read_ids = set(
         r[0] for r in db.query(NotificationRead.notification_id)
@@ -590,7 +624,8 @@ def get_my_notifications(db: Session, user: User, limit: int = 50):
 
 def get_unread_count(db: Session, user: User) -> int:
     notification_ids = [
-        r[0] for r in _user_scope(db, user, db.query(Notification.id)).all()
+        r[0] for r in _user_scope(db, user, db.query(Notification.id))
+        .filter(Notification.notification_type != "Mobile Update").all()
     ]
     if not notification_ids:
         return 0

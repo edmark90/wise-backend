@@ -1,12 +1,18 @@
 import os
+import threading
+import time
 
+
+from apps.routers.mobile_updates import router as mobile_updates_router
+from apps.services.mobile_update import sync_update_reminders
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
-from apps.database import test_connection, engine
+from apps.database import test_connection, engine, SessionLocal
+from apps.services.collection_schedule import sync_auto_status_notifications
 from apps.routers.auth import router as auth_router
 from apps.routers.profile import router as profile_router, UPLOAD_ROOT
 from apps.routers.users import router as users_router
@@ -34,6 +40,47 @@ def ensure_schema():
     """Idempotent startup migrations for new notification tables/columns."""
     try:
         with engine.connect() as conn:
+            #create mobile_updates tables
+            conn.execute(text("""
+    CREATE TABLE IF NOT EXISTS app_versions (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        version VARCHAR(30) NOT NULL,
+        version_code INT NOT NULL,
+        title VARCHAR(120) NOT NULL,
+        release_notes TEXT NULL,
+        apk_url VARCHAR(500) NOT NULL,
+        is_force TINYINT(1) NOT NULL DEFAULT 0,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_ver (version),
+        UNIQUE KEY uq_vercode (version_code)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""))
+
+            conn.execute(text("""
+    CREATE TABLE IF NOT EXISTS app_update_announcements (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        title VARCHAR(120) NOT NULL,
+        message TEXT NOT NULL,
+        app_version_id INT UNSIGNED NOT NULL,
+        is_force TINYINT(1) NOT NULL DEFAULT 0,
+        reminder VARCHAR(20) NOT NULL DEFAULT 'None',
+        reminder_interval_minutes INT NOT NULL DEFAULT 0,
+        next_reminder_at DATETIME NULL,
+        sent_reminders INT NOT NULL DEFAULT 0,
+        max_reminders INT NOT NULL DEFAULT 3,
+        notification_id INT NULL,
+        created_by INT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""))
+
+
+
+
+
             # New tables
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS device_tokens (
@@ -90,6 +137,13 @@ def ensure_schema():
 
             # notifications columns
             n_cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM notifications"))]
+
+            if "app_version" not in n_cols:
+                conn.execute(text("ALTER TABLE notifications ADD COLUMN app_version VARCHAR(30) NULL"))
+            if "apk_url" not in n_cols:
+                conn.execute(text("ALTER TABLE notifications ADD COLUMN apk_url VARCHAR(500) NULL"))
+            conn.commit()
+
             notif_columns = {
                 "notification_type": "VARCHAR(50) NULL",
                 "category": "VARCHAR(50) NULL",
@@ -128,6 +182,39 @@ def ensure_schema():
 
 ensure_schema()
 
+# ---------------------------------------------------------------------------
+# Automatic route status notifications (Arriving / Arrived / Completed)
+# ---------------------------------------------------------------------------
+def start_auto_status_worker():
+    """Background loop that emits a notification + FCM push the first time a
+    today's route crosses into Arriving / Arrived / Completed.
+
+    Statuses are server-time-derived, so this daemon polls the clock instead
+    of relying on an admin action. generate_route_notification dedups by
+    (schedule, type, day), so overlapping instances are safe.
+    """
+    def run():
+        while True:
+            try:
+                db = SessionLocal()
+                try:
+                    n = sync_auto_status_notifications(db)
+                    if n:
+                        print(f"[auto-status] emitted {n} automatic route notification(s)")
+                    
+                    reminders_sent = sync_update_reminders(db)
+                    if reminders_sent > 0:
+                        print(f"[mobile-update] Processed background update reminders: {reminders_sent} push(es) sent")
+                finally:
+                    db.close()
+            except Exception as e:
+                print(f"[auto-status] worker error: {e}")
+            time.sleep(60)
+
+    threading.Thread(target=run, daemon=True, name="auto-status-worker").start()
+
+start_auto_status_worker()
+
 # Uploads directory for profile pictures (created automatically if missing)
 os.makedirs(os.path.join(UPLOAD_ROOT, "profile"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
@@ -154,6 +241,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
+app.include_router(mobile_updates_router, prefix="/api")
 # Profile router first so /api/users/profile/* is not shadowed by /api/users/{user_id}
 app.include_router(profile_router, prefix="/api/users", tags=["Profile"])
 app.include_router(users_router, prefix="/api/users", tags=["Users"])

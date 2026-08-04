@@ -32,15 +32,8 @@ class DeviceTokenCreate(BaseModel):
     token: str
     platform: str = "android"
 
-
 class NotificationListItem(BaseModel):
-    """Notification schema for admin history lists.
-
-    Includes the full field set so the click-to-detail panel renders accurate
-    data without a second fetch.
-    """
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     notification_type: Optional[str] = None
     title: str
@@ -60,12 +53,12 @@ class NotificationListItem(BaseModel):
     status: Optional[str] = None
     created_by_name: Optional[str] = None
     created_at: datetime
+    app_version: Optional[str] = None
+    apk_url: Optional[str] = None
 
 
 class NotificationResponse(BaseModel):
-    """Full notification schema for detail views."""
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     title: str
     message: str
@@ -90,6 +83,9 @@ class NotificationResponse(BaseModel):
     created_by_name: Optional[str] = None
     created_at: datetime
     is_read: bool = False
+    app_version: Optional[str] = None
+    apk_url: Optional[str] = None
+
 
 
 class MyNotificationListItem(BaseModel):
@@ -110,6 +106,8 @@ class MyNotificationListItem(BaseModel):
     collection_time: Optional[str] = None
     created_at: datetime
     is_read: bool = False
+    app_version: Optional[str] = None
+    apk_url: Optional[str] = None
 
 
 class NotificationListResponse(BaseModel):

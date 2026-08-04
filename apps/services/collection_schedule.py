@@ -1,9 +1,11 @@
 from sqlalchemy.orm import Session, load_only
 from sqlalchemy import or_
 from typing import Optional, List
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from apps.models.collection_schedule import CollectionSchedule
+from apps.models.notification import Notification
 from apps.services.notification import (
+    STATUS_TO_TYPE,
     handle_status_change,
     generate_route_notification,
     generate_reschedule_notification,
@@ -15,17 +17,21 @@ MANUAL_STATUSES = ("Cancelled", "Delayed")
 AUTO_STATUSES = ("Upcoming", "Arriving", "Arrived", "Completed")
 # A route flips to "Arriving" this many minutes before its scheduled time.
 ARRIVING_LEAD_MINUTES = 30
+# A route flips from "Arrived" to "Completed" this many minutes after its
+# scheduled time, so today's route can reach "Completed" on collection day.
+COMPLETED_AFTER_MINUTES = 60
 
 
 def derive_schedule_status(schedule, now: Optional[datetime] = None) -> str:
     """Compute the server-time-derived status for a single route stop.
 
     Manual statuses (Cancelled/Delayed) are preserved untouched. Otherwise:
-      - past date       -> Completed
-      - future date     -> Upcoming
-      - today, > lead   -> Upcoming
-      - today, in lead  -> Arriving
-      - today, at/after -> Arrived
+      - past date              -> Completed
+      - future date            -> Upcoming
+      - today, > lead          -> Upcoming
+      - today, in lead         -> Arriving
+      - today, at/until +60min -> Arrived
+      - today, after +60min    -> Completed
     """
     if schedule.status in MANUAL_STATUSES:
         return schedule.status
@@ -43,7 +49,9 @@ def derive_schedule_status(schedule, now: Optional[datetime] = None) -> str:
         return "Upcoming"
     if now < sched_dt:
         return "Arriving"
-    return "Arrived"
+    if now < sched_dt + timedelta(minutes=COMPLETED_AFTER_MINUTES):
+        return "Arrived"
+    return "Completed"
 
 
 def apply_derived_statuses(schedules, now: Optional[datetime] = None):
@@ -59,6 +67,45 @@ def apply_derived_statuses(schedules, now: Optional[datetime] = None):
     for s in schedules:
         s.status = derive_schedule_status(s, now)
     return schedules
+
+
+def sync_auto_status_notifications(db: Session) -> int:
+    """Materialize Arriving / Arrived / Completed notifications for today.
+
+    These statuses are server-time-derived (see derive_schedule_status); this
+    worker turns each threshold crossing into a real notification record (and
+    FCM push to the affected barangays) the first time a route enters that
+    state each day. Dedup happens inside generate_route_notification, so
+    repeated scans are harmless.
+    """
+    emitted = 0
+    today = date.today()
+    start = datetime.combine(today, time.min)
+    end = datetime.combine(today, time.max)
+    schedules = db.query(CollectionSchedule).filter(
+        CollectionSchedule.collection_date == today
+    ).all()
+    for s in schedules:
+        if s.status in MANUAL_STATUSES:
+            continue
+        derived = derive_schedule_status(s)
+        if derived not in ("Arriving", "Arrived", "Completed"):
+            continue
+        notification_type = STATUS_TO_TYPE.get(derived)
+        if not notification_type:
+            continue
+        existing = db.query(Notification.id).filter(
+            Notification.schedule_id == s.id,
+            Notification.notification_type == notification_type,
+            Notification.status == "Sent",
+            Notification.created_at >= start,
+            Notification.created_at <= end,
+        ).first()
+        if existing:
+            continue
+        if generate_route_notification(db, s, notification_type) is not None:
+            emitted += 1
+    return emitted
 
 
 def _normalize_status(schedule_data: dict) -> dict:

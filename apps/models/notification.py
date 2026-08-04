@@ -32,4 +32,6 @@ class Notification(Base):
     status = Column(String(20), default="Sent")
     created_by = Column(Integer, nullable=True)
     created_by_name = Column(String(100), nullable=True)
+    app_version = Column(String(30), nullable=True)
+    apk_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
