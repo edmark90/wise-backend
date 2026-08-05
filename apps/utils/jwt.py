@@ -8,7 +8,7 @@ from apps.config import SECRET_KEY
 from apps.database import get_db
 from apps.models.user import User
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 259200  # 6 months (180 days)
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 security = HTTPBearer()
