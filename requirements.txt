@@ -9,6 +9,6 @@ uvicorn==0.51.0
 email-validator>=2.0.0
 python-multipart==0.0.32
 firebase-admin>=6.5.0
-tensorflow>=2.15.0
+tensorflow==2.15.0
 Pillow>=10.0.0
 numpy>=1.26.0
