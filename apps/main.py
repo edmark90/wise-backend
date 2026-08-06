@@ -3,6 +3,10 @@ import threading
 import time
 
 
+from contextlib import asynccontextmanager
+from apps.routers.prediction import router as prediction_router
+from apps.routers.health_model import router as health_model_router
+from apps.services.model_service import model_service
 from apps.routers.mobile_updates import router as mobile_updates_router
 from apps.services.mobile_update import sync_update_reminders
 from fastapi import FastAPI
@@ -31,10 +35,23 @@ from apps.middleware.error_handler import (
     generic_exception_handler
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Load the MobileNetV2 model ONLY ONCE
+    try:
+        model_service.load_model()
+    except Exception as e:
+        print(f"[Lifespan Startup Warning] Model loading deferred or error: {e}")
+    yield
+
+
 app = FastAPI(
-    title="WISE Backend API",
-    version="1.0.0"
+    title="WISE Backend API & Waste Classifier",
+    version="1.0.0",
+    lifespan=lifespan
 )
+
 
 def ensure_schema():
     """Idempotent startup migrations for new notification tables/columns."""
@@ -251,6 +268,9 @@ app.include_router(collection_schedules_router, prefix="/api/collection-schedule
 app.include_router(collection_history_router, prefix="/api/collection-history", tags=["Collection History"])
 app.include_router(notifications_router, prefix="/api/notifications", tags=["Notifications"])
 app.include_router(ai_guides_router, prefix="/api/ai-guides", tags=["AI Guides"])
+app.include_router(prediction_router)
+app.include_router(health_model_router)
+
 
 @app.get("/")
 def root():

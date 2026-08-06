@@ -1,0 +1,187 @@
+import os
+import time
+import json
+import logging
+import threading
+import asyncio
+from typing import Dict, Any, List, Optional
+import numpy as np
+from fastapi import HTTPException, status
+import tensorflow as tf
+
+from apps.config import MODEL_PATH, LABELS_PATH, CLASS_MAPPING_PATH
+
+logger = logging.getLogger("waste_classifier.model_service")
+
+
+class WasteClassifierService:
+    _instance: Optional["WasteClassifierService"] = None
+    _lock = threading.Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(WasteClassifierService, cls).__new__(cls)
+                    cls._instance._is_loaded = False
+                    cls._instance._model = None
+                    cls._instance._labels: List[str] = []
+                    cls._instance._inference_lock = threading.Lock()
+        return cls._instance
+
+    def load_model(self) -> None:
+        """
+        Loads the Keras model and label mappings into memory ONCE during server startup.
+        """
+        if self._is_loaded:
+            logger.info("Model is already loaded in memory.")
+            return
+
+        with self._lock:
+            if self._is_loaded:
+                return
+
+            logger.info(f"Loading Keras model from: {MODEL_PATH}")
+            if not os.path.exists(MODEL_PATH):
+                raise FileNotFoundError(f"Model file not found at path: {MODEL_PATH}")
+
+            try:
+                # Patch Keras Dense layer to handle exported quantization_config parameter in Keras 3
+                try:
+                    import keras
+                    _orig_dense_from_config = keras.layers.Dense.from_config
+                    @classmethod
+                    def _patched_dense_from_config(cls, config):
+                        if isinstance(config, dict):
+                            config.pop("quantization_config", None)
+                        return _orig_dense_from_config.__get__(None, cls)(config)
+                    keras.layers.Dense.from_config = _patched_dense_from_config
+                except Exception as patch_err:
+                    logger.debug(f"Keras Dense patch notice: {patch_err}")
+
+                # Load Keras model (.keras format)
+                self._model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+
+                
+                # Warmup inference to initialize TensorFlow computational graph/XLA
+                dummy_input = np.zeros((1, 224, 224, 3), dtype=np.float32)
+                _ = self._model(dummy_input, training=False)
+
+                # Load labels or class mapping
+                self._labels = self._load_class_labels()
+                self._is_loaded = True
+
+                logger.info(
+                    f"Model loaded successfully! Classes ({len(self._labels)}): {self._labels}"
+                )
+            except Exception as e:
+                logger.critical(f"Failed to load Keras model: {str(e)}", exc_info=True)
+                raise RuntimeError(f"Could not load waste classification model: {str(e)}")
+
+    def _load_class_labels(self) -> List[str]:
+        """
+        Loads class names from class_mapping.json or labels.txt.
+        """
+        # Try loading class_mapping.json first if available
+        if os.path.exists(CLASS_MAPPING_PATH):
+            try:
+                with open(CLASS_MAPPING_PATH, "r", encoding="utf-8") as f:
+                    mapping = json.load(f)
+                    # Convert dict {"0": "Biodegradable", ...} to ordered list by index
+                    sorted_pairs = sorted(mapping.items(), key=lambda item: int(item[0]))
+                    return [pair[1] for pair in sorted_pairs]
+            except Exception as e:
+                logger.warning(f"Failed reading class_mapping.json ({e}), falling back to labels.txt")
+
+        # Fallback to labels.txt
+        if os.path.exists(LABELS_PATH):
+            with open(LABELS_PATH, "r", encoding="utf-8") as f:
+                labels = [line.strip() for line in f.readlines() if line.strip()]
+                if labels:
+                    return labels
+
+        # Default fallback list if no external label files exist
+        return ["Biodegradable", "Electronic", "Hazardous", "Recyclable", "Residual"]
+
+    def _predict_sync(self, tensor_batch: np.ndarray) -> Dict[str, Any]:
+        """
+        Synchronous thread-safe model inference operation.
+        """
+        if not self._is_loaded or self._model is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Model is not loaded."
+            )
+
+        start_time = time.perf_counter()
+
+        with self._inference_lock:
+            # Perform prediction (training=False ensures Dropout/BatchNormalization act in inference mode)
+            raw_predictions = self._model(tensor_batch, training=False).numpy()[0]
+
+        # Apply Softmax if probabilities don't already sum to 1.0 (logits safeguard)
+        if not np.isclose(np.sum(raw_predictions), 1.0, atol=1e-2):
+            exp_preds = np.exp(raw_predictions - np.max(raw_predictions))
+            probabilities = exp_preds / np.sum(exp_preds)
+        else:
+            probabilities = raw_predictions
+
+        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+        # Get highest probability index & class name
+        top_idx = int(np.argmax(probabilities))
+        
+        if top_idx < len(self._labels):
+            predicted_class = self._labels[top_idx]
+        else:
+            predicted_class = f"Class_{top_idx}"
+
+        top_confidence_pct = round(float(probabilities[top_idx]) * 100, 2)
+
+        # Build dictionary of all class probabilities
+        prob_dict: Dict[str, float] = {}
+        for idx, prob in enumerate(probabilities):
+            class_name = self._labels[idx] if idx < len(self._labels) else f"Class_{idx}"
+            prob_dict[class_name] = round(float(prob), 4)
+
+        return {
+            "success": True,
+            "prediction": predicted_class,
+            "confidence": top_confidence_pct,
+            "probabilities": prob_dict,
+            "processing_time_ms": elapsed_ms
+        }
+
+    async def predict_async(self, tensor_batch: np.ndarray) -> Dict[str, Any]:
+        """
+        Asynchronous wrapper around thread-safe model inference using asyncio.to_thread
+        to prevent blocking the main asyncio event loop.
+        """
+        try:
+            return await asyncio.to_thread(self._predict_sync, tensor_batch)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"TensorFlow inference error: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Inference execution failed: {str(e)}"
+            )
+
+    def get_info(self) -> Dict[str, Any]:
+        """
+        Returns model metadata, status, backbone architecture, and label categories.
+        """
+        return {
+            "status": "loaded" if self._is_loaded else "unloaded",
+            "model_file": os.path.basename(MODEL_PATH),
+            "backbone": "MobileNetV2",
+            "input_shape": [224, 224, 3],
+            "num_classes": len(self._labels),
+            "classes": self._labels,
+            "framework": f"TensorFlow {tf.__version__} (Keras)"
+        }
+
+
+# Global singleton service accessor
+model_service = WasteClassifierService()

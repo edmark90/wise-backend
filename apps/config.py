@@ -18,3 +18,10 @@ SECRET_KEY = os.getenv("SECRET_KEY", "wise-secret-key-change-in-production")
 # still works.
 FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
 FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH")
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(BASE_DIR, "apps", "ai_model", "waste_classifier.keras"))
+LABELS_PATH = os.getenv("LABELS_PATH", os.path.join(BASE_DIR, "apps", "ai_model", "labels.txt"))
+CLASS_MAPPING_PATH = os.getenv("CLASS_MAPPING_PATH", os.path.join(BASE_DIR, "apps", "ai_model", "class_mapping.json"))
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))
+ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
