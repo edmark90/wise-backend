@@ -7,7 +7,13 @@ import asyncio
 from typing import Dict, Any, List, Optional
 import numpy as np
 from fastapi import HTTPException, status
-import tensorflow as tf
+
+try:
+    import tflite_runtime.interpreter as tflite
+    InterpreterCls = tflite.Interpreter
+except ImportError:
+    # Fallback for local dev where full TensorFlow is installed
+    from tensorflow.lite.python.interpreter import Interpreter as InterpreterCls
 
 from apps.config import MODEL_PATH, LABELS_PATH, CLASS_MAPPING_PATH
 
@@ -25,6 +31,8 @@ class WasteClassifierService:
                     cls._instance = super(WasteClassifierService, cls).__new__(cls)
                     cls._instance._is_loaded = False
                     cls._instance._model = None
+                    cls._instance._input_details = None
+                    cls._instance._output_details = None
                     cls._instance._labels: List[str] = []
                     cls._instance._inference_lock = threading.Lock()
         return cls._instance
@@ -41,31 +49,24 @@ class WasteClassifierService:
             if self._is_loaded:
                 return
 
-            logger.info(f"Loading Keras model from: {MODEL_PATH}")
+            logger.info(f"Loading TFLite model from: {MODEL_PATH}")
             if not os.path.exists(MODEL_PATH):
                 raise FileNotFoundError(f"Model file not found at path: {MODEL_PATH}")
 
             try:
-                # Patch Keras Dense layer to handle exported quantization_config parameter in Keras 3
-                try:
-                    import keras
-                    _orig_dense_from_config = keras.layers.Dense.from_config
-                    @classmethod
-                    def _patched_dense_from_config(cls, config):
-                        if isinstance(config, dict):
-                            config.pop("quantization_config", None)
-                        return _orig_dense_from_config.__get__(None, cls)(config)
-                    keras.layers.Dense.from_config = _patched_dense_from_config
-                except Exception as patch_err:
-                    logger.debug(f"Keras Dense patch notice: {patch_err}")
+                # Load the TFLite interpreter model
+                self._model = InterpreterCls(model_path=MODEL_PATH)
+                self._model.allocate_tensors()
+                self._input_details = self._model.get_input_details()
+                self._output_details = self._model.get_output_details()
 
-                # Load Keras model (.keras format)
-                self._model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-
-                
-                # Warmup inference to initialize TensorFlow computational graph/XLA
-                dummy_input = np.zeros((1, 224, 224, 3), dtype=np.float32)
-                _ = self._model(dummy_input, training=False)
+                # Warmup inference to initialize the interpreter / XNNPACK delegate
+                dummy_input = np.zeros(
+                    self._input_details[0]["shape"], dtype=self._input_details[0]["dtype"]
+                )
+                self._model.set_tensor(self._input_details[0]["index"], dummy_input)
+                self._model.invoke()
+                _ = self._model.get_tensor(self._output_details[0]["index"])
 
                 # Load labels or class mapping
                 self._labels = self._load_class_labels()
@@ -75,7 +76,7 @@ class WasteClassifierService:
                     f"Model loaded successfully! Classes ({len(self._labels)}): {self._labels}"
                 )
             except Exception as e:
-                logger.critical(f"Failed to load Keras model: {str(e)}", exc_info=True)
+                logger.critical(f"Failed to load TFLite model: {str(e)}", exc_info=True)
                 raise RuntimeError(f"Could not load waste classification model: {str(e)}")
 
     def _load_class_labels(self) -> List[str]:
@@ -116,8 +117,10 @@ class WasteClassifierService:
         start_time = time.perf_counter()
 
         with self._inference_lock:
-            # Perform prediction (training=False ensures Dropout/BatchNormalization act in inference mode)
-            raw_predictions = self._model(tensor_batch, training=False).numpy()[0]
+            # Run inference on the TFLite interpreter
+            self._model.set_tensor(self._input_details[0]["index"], tensor_batch)
+            self._model.invoke()
+            raw_predictions = self._model.get_tensor(self._output_details[0]["index"])[0]
 
         # Apply Softmax if probabilities don't already sum to 1.0 (logits safeguard)
         if not np.isclose(np.sum(raw_predictions), 1.0, atol=1e-2):
@@ -179,7 +182,7 @@ class WasteClassifierService:
             "input_shape": [224, 224, 3],
             "num_classes": len(self._labels),
             "classes": self._labels,
-            "framework": f"TensorFlow {tf.__version__} (Keras)"
+            "framework": "TensorFlow Lite (TFLite)"
         }
 
 
