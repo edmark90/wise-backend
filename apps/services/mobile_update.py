@@ -8,6 +8,7 @@ from apps.models.mobile_update import AppVersion, AppUpdateAnnouncement
 from apps.models.notification import Notification
 from apps.schemas.mobile_update import AppVersionCreate, SendMobileUpdateIn
 from apps.services.notification import _push_app_update
+from apps.utils.ph_time import ph_now
 
 REMINDER_MINUTES = {
     "None": 0,
@@ -93,7 +94,7 @@ def send_mobile_update(db: Session, payload: SendMobileUpdateIn, admin_id: int, 
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Selected version has no APK Download Link. Please add an APK link first.")
 
     interval = REMINDER_MINUTES.get(payload.reminder, 0)
-    next_reminder = datetime.now() + timedelta(minutes=interval) if interval > 0 else None
+    next_reminder = ph_now() + timedelta(minutes=interval) if interval > 0 else None
 
     # 1. Create Notification for Citizen Inbox
     notification = Notification(
@@ -143,7 +144,7 @@ def get_latest_update(db: Session) -> Optional[AppVersion]:
     return db.query(AppVersion).order_by(desc(AppVersion.version_code)).first()
 
 def sync_update_reminders(db: Session) -> int:
-    now = datetime.now()
+    now = ph_now()
     due = db.query(AppUpdateAnnouncement).filter(
         AppUpdateAnnouncement.next_reminder_at.isnot(None),
         AppUpdateAnnouncement.next_reminder_at <= now,

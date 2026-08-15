@@ -10,6 +10,7 @@ from apps.services.notification import (
     generate_route_notification,
     generate_reschedule_notification,
 )
+from apps.utils.ph_time import ph_now, ph_today
 
 # Automatic statuses are derived from the server clock. Manual statuses
 # (Delayed/Cancelled) are set via the status-change modal and preserved.
@@ -39,7 +40,7 @@ def derive_schedule_status(schedule, now: Optional[datetime] = None) -> str:
     t = schedule.collection_time
     if not d or not t:
         return schedule.status or "Upcoming"
-    now = now or datetime.now()
+    now = now or ph_now()
     if d < now.date():
         return "Completed"
     if d > now.date():
@@ -63,7 +64,7 @@ def apply_derived_statuses(schedules, now: Optional[datetime] = None):
     """
     if not schedules:
         return schedules
-    now = now or datetime.now()
+    now = now or ph_now()
     for s in schedules:
         s.status = derive_schedule_status(s, now)
     return schedules
@@ -79,7 +80,7 @@ def sync_auto_status_notifications(db: Session) -> int:
     repeated scans are harmless.
     """
     emitted = 0
-    today = date.today()
+    today = ph_today()
     start = datetime.combine(today, time.min)
     end = datetime.combine(today, time.max)
     schedules = db.query(CollectionSchedule).filter(

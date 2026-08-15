@@ -11,6 +11,7 @@ from apps.models.notification import Notification
 from apps.models.notification_read import NotificationRead
 from apps.models.user import User
 from apps.services.push import send_push_notifications
+from apps.utils.ph_time import ph_today
 
 # Manual notification types (Notification Module) — the admin never selects
 # recipients; recipients are resolved automatically from user preferences.
@@ -134,7 +135,7 @@ def generate_route_notification(
     Collection" notification is built that lists EVERY route/barangay for the
     day, and the affected barangays are the union across all of them.
     """
-    today = date.today()
+    today = ph_today()
     existing = db.query(Notification).filter(
         Notification.schedule_id == schedule.id,
         Notification.notification_type == notification_type,
@@ -533,7 +534,7 @@ def get_notifications(
 
 def get_notification_summary(db: Session) -> dict:
     """Counts for the Notification Center summary cards."""
-    today = date.today()
+    today = ph_today()
     start = datetime.combine(today, time.min)
     end = datetime.combine(today, time.max)
     today_count = db.query(Notification).filter(

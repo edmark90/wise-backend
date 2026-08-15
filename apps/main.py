@@ -194,6 +194,35 @@ def ensure_schema():
             if "starting_point" not in s_cols:
                 conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN starting_point VARCHAR(255) NULL"))
             conn.commit()
+
+            # waste_records table (AI classifications from the mobile app)
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS waste_records (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NULL,
+                    image_url TEXT NOT NULL,
+                    waste_type VARCHAR(100) NOT NULL,
+                    disposal_category VARCHAR(50) NOT NULL,
+                    confidence DECIMAL(5,2) NULL,
+                    is_flagged TINYINT(1) NOT NULL DEFAULT 0,
+                    classified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_wr_classified_at (classified_at),
+                    INDEX idx_wr_type (waste_type)
+                ) ENGINE=InnoDB
+            """))
+            wr_cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM waste_records"))]
+            if "is_flagged" not in wr_cols:
+                conn.execute(text("ALTER TABLE waste_records ADD COLUMN is_flagged TINYINT(1) NOT NULL DEFAULT 0"))
+                conn.commit()
+                print("[schema] Added waste_records.is_flagged column")
+            # Widen columns (existing table may predate the AI capture feature).
+            conn.execute(text(
+                "ALTER TABLE waste_records "
+                "MODIFY COLUMN waste_type VARCHAR(100) NOT NULL, "
+                "MODIFY COLUMN disposal_category VARCHAR(50) NOT NULL"
+            ))
+            conn.commit()
+            print("[schema] Ensured waste_records table")
     except Exception as e:
         print(f"[schema] Migration skipped: {e}")
 
@@ -234,6 +263,7 @@ start_auto_status_worker()
 
 # Uploads directory for profile pictures (created automatically if missing)
 os.makedirs(os.path.join(UPLOAD_ROOT, "profile"), exist_ok=True)
+os.makedirs(os.path.join(UPLOAD_ROOT, "waste"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 
 # Exception handlers

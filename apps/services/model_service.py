@@ -20,6 +20,23 @@ from apps.config import MODEL_PATH, LABELS_PATH, CLASS_MAPPING_PATH
 logger = logging.getLogger("waste_classifier.model_service")
 
 
+# Map the display labels (class_mapping.json) to short DB keys (labels.txt).
+# Storing the short form keeps waste_records values colon-len bounded and
+# aligned with the admin "waste type" filter options.
+CLASS_KEY_MAP = {
+    "Biodegradable Waste": "Biodegradable",
+    "Electronic Waste (E-Waste)": "Electronic",
+    "Hazardous Waste": "Hazardous",
+    "Recyclable Waste": "Recyclable",
+    "Residual (Non-Recyclable) Waste": "Residual",
+}
+
+
+def class_key(label: str) -> str:
+    """Short stable key for a model label (falls back to the label unchanged)."""
+    return CLASS_KEY_MAP.get(label, label)
+
+
 class WasteClassifierService:
     _instance: Optional["WasteClassifierService"] = None
     _lock = threading.Lock()

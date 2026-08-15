@@ -1,10 +1,17 @@
 import io
+import os
+import time
 import logging
 import imghdr
+from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 import numpy as np
 from fastapi import HTTPException, status
-from apps.config import ALLOWED_IMAGE_MIME_TYPES, MAX_UPLOAD_SIZE_MB
+from apps.config import (
+    ALLOWED_IMAGE_MIME_TYPES,
+    MAX_UPLOAD_SIZE_MB,
+    WASTE_UPLOAD_DIR,
+)
 
 logger = logging.getLogger("waste_classifier.image_processor")
 
@@ -66,6 +73,29 @@ def validate_image_metadata(content_type: str, file_size: int, image_bytes: byte
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File size exceeds maximum allowed size of {MAX_UPLOAD_SIZE_MB}MB."
         )
+
+
+def save_waste_image(image_bytes: bytes, original_filename: str) -> str:
+    """Persist a captured waste photo to disk.
+
+    Returns the stored path (e.g. "uploads/waste/waste_1234_ab12.jpg"), which is
+    relative to the backend root and served by the /uploads static mount. The DB
+    stores only this path string — never the image bytes.
+    """
+    ext_map = {
+        "jpg": "jpg", "jpeg": "jpg", "png": "png", "webp": "webp",
+    }
+    raw_ext = (original_filename or "").split(".")[-1].lower()
+    ext = ext_map.get(raw_ext, "jpg")
+
+    os.makedirs(WASTE_UPLOAD_DIR, exist_ok=True)
+    filename = f"waste_{int(time.time())}_{uuid4().hex[:8]}"
+    dest = os.path.join(WASTE_UPLOAD_DIR, f"{filename}.{ext}")
+
+    with open(dest, "wb") as f:
+        f.write(image_bytes)
+
+    return f"uploads/waste/{filename}.{ext}"
 
 
 def process_image_bytes(image_bytes: bytes) -> np.ndarray:

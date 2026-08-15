@@ -7,13 +7,14 @@ from apps.models.waste_record import WasteRecord
 from apps.models.collection_schedule import CollectionSchedule
 from apps.models.collection_history import CollectionHistory
 from apps.models.notification import Notification
+from apps.utils.ph_time import ph_today
 
 def get_dashboard_stats(db: Session):
     """Get dashboard statistics.
     All counts use COUNT() aggregate queries — never retrieves full records.
     Matches actual DB schema (classified_at, confidence, disposal_category).
     """
-    today = date.today()
+    today = ph_today()
     
     # Total users
     total_users = db.query(func.count(User.id)).scalar() or 0

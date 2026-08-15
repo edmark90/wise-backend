@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -79,6 +79,31 @@ async def get_current_user(
         )
 
     return user
+
+async def get_optional_current_user(
+    request: Request,
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """Like get_current_user, but never raises — returns None when the request
+    carries no valid Bearer token. Used by public endpoints (e.g. prediction)
+    that still want to attribute records to the logged-in citizen."""
+    auth: Optional[str] = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None
+
+    payload = decode_access_token(auth.split(" ", 1)[1])
+    if payload is None or payload.get("sub") is None:
+        return None
+
+    try:
+        user = db.query(User).filter(User.id == int(payload["sub"])).first()
+    except (ValueError, TypeError):
+        return None
+
+    if not user or not user.is_active:
+        return None
+    return user
+
 
 async def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
     """Get the current authenticated user and verify they are an admin."""

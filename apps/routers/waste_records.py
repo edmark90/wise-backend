@@ -6,14 +6,16 @@ from apps.schemas.waste_record import (
     WasteRecordCreate,
     WasteRecordUpdate,
     WasteRecordResponse,
-    WasteRecordListResponse
+    WasteRecordListResponse,
+    WasteClassificationStats
 )
 from apps.services.waste_record import (
     get_waste_records,
     get_waste_record_by_id,
     create_waste_record,
     update_waste_record,
-    delete_waste_record
+    delete_waste_record,
+    get_waste_classification_stats
 )
 from apps.utils.jwt import get_current_admin
 from apps.models.user import User
@@ -56,6 +58,15 @@ def list_waste_records(
         "page": page,
         "page_size": page_size
     }
+
+@router.get("/stats", response_model=WasteClassificationStats)
+def get_classification_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin)
+):
+    """Aggregate stats for the admin Waste Classification dashboard (3 cards)."""
+    return get_waste_classification_stats(db)
+
 
 @router.get("/{record_id}", response_model=WasteRecordResponse)
 def get_waste_record(
