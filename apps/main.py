@@ -195,6 +195,25 @@ def ensure_schema():
                 conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN starting_point VARCHAR(255) NULL"))
             conn.commit()
 
+            # collection_history table (completed collections, dashboard source)
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS collection_history (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    schedule_id INT NOT NULL,
+                    personnel_id INT NULL,
+                    collection_date DATETIME NOT NULL,
+                    area VARCHAR(255) NOT NULL,
+                    waste_collected_kg FLOAT NULL,
+                    completion_date DATETIME NULL,
+                    remarks TEXT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_ch_schedule (schedule_id),
+                    INDEX idx_ch_date (collection_date)
+                ) ENGINE=InnoDB
+            """))
+            conn.commit()
+            print("[schema] Ensured collection_history table")
+
             # waste_records table (AI classifications from the mobile app)
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS waste_records (
