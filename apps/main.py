@@ -26,6 +26,7 @@ from apps.routers.collection_schedules import router as collection_schedules_rou
 from apps.routers.collection_history import router as collection_history_router
 from apps.routers.notifications import router as notifications_router
 from apps.routers.ai_guides import router as ai_guides_router
+from apps.routers.reports import router as reports_router
 from apps.middleware.rate_limiter import rate_limiting_middleware
 from apps.middleware.error_handler import (
     AppException,
@@ -317,6 +318,7 @@ app.include_router(collection_schedules_router, prefix="/api/collection-schedule
 app.include_router(collection_history_router, prefix="/api/collection-history", tags=["Collection History"])
 app.include_router(notifications_router, prefix="/api/notifications", tags=["Notifications"])
 app.include_router(ai_guides_router, prefix="/api/ai-guides", tags=["AI Guides"])
+app.include_router(reports_router, prefix="/api/reports", tags=["Reports"])
 app.include_router(prediction_router)
 app.include_router(health_model_router)
 
