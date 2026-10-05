@@ -8,7 +8,7 @@ from apps.models.waste_record import WasteRecord
 from apps.models.collection_schedule import CollectionSchedule
 from apps.models.collection_history import CollectionHistory
 from apps.models.notification import Notification
-from apps.utils.ph_time import ph_today
+from apps.utils.ph_time import ph_today, ph_now
 
 def get_dashboard_stats(db: Session):
     """Get dashboard statistics.
@@ -174,3 +174,148 @@ def get_monthly_dashboard_stats(db: Session, year: int, month: int):
         "total_notifications": total_notifications,
         "total_users": db.query(func.count(User.id)).scalar() or 0,
     }
+
+
+def get_dashboard_activity(db: Session):
+    """Recent activity feed for the dashboard.
+    Merges recent waste classifications, collection completions, user
+    registrations, and notifications into a unified, time-sorted list.
+    """
+    now = ph_now()
+    cutoff = now - timedelta(days=7)
+    activities = []
+
+    # Recent waste classifications
+    try:
+        recent_records = db.query(WasteRecord).filter(
+            WasteRecord.classified_at >= cutoff
+        ).order_by(WasteRecord.classified_at.desc()).limit(20).all()
+        for r in recent_records:
+            activities.append({
+                "id": f"wr_{r.id}",
+                "type": "waste_classified",
+                "message": f"Waste classified as {r.waste_type} ({r.confidence}% confidence)" if r.confidence else f"Waste classified as {r.waste_type}",
+                "created_at": r.classified_at.isoformat() if r.classified_at else now.isoformat(),
+                "barangay": None,
+                "metadata": {"waste_type": r.waste_type, "disposal_category": r.disposal_category},
+            })
+    except ProgrammingError:
+        pass
+
+    # Recent collection completions
+    try:
+        recent_completions = db.query(CollectionHistory).filter(
+            CollectionHistory.created_at >= cutoff
+        ).order_by(CollectionHistory.created_at.desc()).limit(20).all()
+        for c in recent_completions:
+            activities.append({
+                "id": f"ch_{c.id}",
+                "type": "collection_complete",
+                "message": f"Collection completed at {c.area}" + (f" — {c.waste_collected_kg} kg" if c.waste_collected_kg else ""),
+                "created_at": c.created_at.isoformat() if c.created_at else now.isoformat(),
+                "barangay": None,
+                "metadata": {"area": c.area, "waste_collected_kg": c.waste_collected_kg},
+            })
+    except ProgrammingError:
+        pass
+
+    # Recent user registrations
+    try:
+        recent_users = db.query(User).filter(
+            User.created_at >= cutoff
+        ).order_by(User.created_at.desc()).limit(10).all()
+        for u in recent_users:
+            activities.append({
+                "id": f"usr_{u.id}",
+                "type": "user_created",
+                "message": f"New user registered: {u.fullname}",
+                "created_at": u.created_at.isoformat() if u.created_at else now.isoformat(),
+                "barangay": getattr(u, "barangay", None),
+                "metadata": {},
+            })
+    except (ProgrammingError, AttributeError):
+        pass
+
+    # Recent notifications sent
+    try:
+        recent_notifs = db.query(Notification).filter(
+            Notification.created_at >= cutoff
+        ).order_by(Notification.created_at.desc()).limit(10).all()
+        for n in recent_notifs:
+            activities.append({
+                "id": f"ntf_{n.id}",
+                "type": "notification_sent",
+                "message": n.title if hasattr(n, "title") and n.title else "Notification sent",
+                "created_at": n.created_at.isoformat() if n.created_at else now.isoformat(),
+                "barangay": None,
+                "metadata": {},
+            })
+    except (ProgrammingError, AttributeError):
+        pass
+
+    # Sort by created_at descending and cap at 50
+    activities.sort(key=lambda a: a["created_at"], reverse=True)
+    return {"activities": activities[:50]}
+
+
+def get_dashboard_collection_rail(db: Session):
+    """7-day collection operations rail for the dashboard.
+    Returns a day-by-day summary for the past 3 days through 3 days ahead,
+    showing scheduled vs completed collections per day.
+    """
+    today = ph_today()
+    start_date = today - timedelta(days=3)
+    end_date = today + timedelta(days=3)
+
+    # Fetch all schedules in the window
+    schedules = db.query(CollectionSchedule).filter(
+        CollectionSchedule.collection_date >= start_date,
+        CollectionSchedule.collection_date <= end_date,
+    ).all()
+
+    # Group by date
+    by_date: dict[date, list] = {}
+    for s in schedules:
+        d = s.collection_date
+        by_date.setdefault(d, []).append(s)
+
+    # Fetch completions in the window
+    try:
+        completions = db.query(CollectionHistory).filter(
+            CollectionHistory.collection_date >= datetime.combine(start_date, time.min),
+            CollectionHistory.collection_date <= datetime.combine(end_date, time.max),
+        ).all()
+        completed_by_date: dict[date, int] = {}
+        for c in completions:
+            d = c.collection_date.date() if isinstance(c.collection_date, datetime) else c.collection_date
+            completed_by_date[d] = completed_by_date.get(d, 0) + 1
+    except ProgrammingError:
+        completed_by_date = {}
+
+    days = []
+    current = start_date
+    while current <= end_date:
+        day_schedules = by_date.get(current, [])
+        total_count = len(day_schedules)
+        completed_count = completed_by_date.get(current, 0)
+
+        if total_count == 0:
+            status = "pending"
+        elif completed_count >= total_count:
+            status = "completed"
+        elif completed_count > 0:
+            status = "in_progress"
+        else:
+            status = "pending"
+
+        days.append({
+            "date": current.isoformat(),
+            "status": status,
+            "completed_count": completed_count,
+            "total_count": total_count,
+            "is_today": current == today,
+            "is_past": current < today,
+        })
+        current += timedelta(days=1)
+
+    return {"days": days}

@@ -1,14 +1,15 @@
 import os
-import threading
-import time
+# import threading  # Temporarily disabled to debug startup
+# import time  # Temporarily disabled to debug startup
 
 
 from contextlib import asynccontextmanager
-from apps.routers.prediction import router as prediction_router
-from apps.routers.health_model import router as health_model_router
-from apps.services.model_service import model_service
+# Temporarily disabled to debug startup
+# from apps.routers.prediction import router as prediction_router
+# from apps.routers.health_model import router as health_model_router
+# from apps.services.model_service import model_service
 from apps.routers.mobile_updates import router as mobile_updates_router
-from apps.services.mobile_update import sync_update_reminders
+# from apps.services.mobile_update import sync_update_reminders  # Temporarily disabled to debug startup
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
 from apps.database import test_connection, engine, SessionLocal
-from apps.services.collection_schedule import sync_auto_status_notifications
+# from apps.services.collection_schedule import sync_auto_status_notifications  # Temporarily disabled to debug startup
 from apps.routers.auth import router as auth_router
 from apps.routers.profile import router as profile_router, UPLOAD_ROOT
 from apps.routers.users import router as users_router
@@ -41,7 +42,9 @@ from apps.middleware.error_handler import (
 async def lifespan(app: FastAPI):
     # Startup: Load the MobileNetV2 model ONLY ONCE
     try:
-        model_service.load_model()
+        # Temporarily disabled to debug startup
+        # model_service.load_model()
+        print("[Lifespan] Model loading disabled for debugging")
     except Exception as e:
         print(f"[Lifespan Startup Warning] Model loading deferred or error: {e}")
     yield
@@ -192,6 +195,8 @@ def ensure_schema():
             s_cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM collection_schedule"))]
             if "route_name" not in s_cols:
                 conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN route_name VARCHAR(255) NULL"))
+            if "truck_number" not in s_cols:
+                conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN truck_number VARCHAR(100) NULL"))
             if "starting_point" not in s_cols:
                 conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN starting_point VARCHAR(255) NULL"))
             conn.commit()
@@ -246,7 +251,8 @@ def ensure_schema():
     except Exception as e:
         print(f"[schema] Migration skipped: {e}")
 
-ensure_schema()
+# Temporarily disabled to debug startup
+# ensure_schema()
 
 # ---------------------------------------------------------------------------
 # Automatic route status notifications (Arriving / Arrived / Completed)
@@ -279,7 +285,8 @@ def start_auto_status_worker():
 
     threading.Thread(target=run, daemon=True, name="auto-status-worker").start()
 
-start_auto_status_worker()
+# Temporarily disabled to debug startup
+# start_auto_status_worker()
 
 # Uploads directory for profile pictures (created automatically if missing)
 os.makedirs(os.path.join(UPLOAD_ROOT, "profile"), exist_ok=True)
@@ -319,8 +326,9 @@ app.include_router(collection_history_router, prefix="/api/collection-history", 
 app.include_router(notifications_router, prefix="/api/notifications", tags=["Notifications"])
 app.include_router(ai_guides_router, prefix="/api/ai-guides", tags=["AI Guides"])
 app.include_router(reports_router, prefix="/api/reports", tags=["Reports"])
-app.include_router(prediction_router)
-app.include_router(health_model_router)
+# Temporarily disabled to debug startup
+# app.include_router(prediction_router)
+# app.include_router(health_model_router)
 
 
 @app.get("/")

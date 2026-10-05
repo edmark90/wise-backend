@@ -27,9 +27,12 @@ class User(Base):
     notif_completed_collection = Column(Boolean, default=True)
 
     # Preferred barangays for notification targeting (JSON list of names).
-    # The mobile Notification Settings page lets a citizen subscribe to one or
-    # more barangays; delivery is matched against these (never admin-chosen).
     preferred_barangays = Column(Text, nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    @property
+    def full_name(self) -> str:
+        """Alias for fullname column for compatibility."""
+        return self.fullname or ""
