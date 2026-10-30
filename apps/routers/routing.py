@@ -1,70 +1,85 @@
-﻿"""
-WISE Backend - Routing Proxy
-Securely proxies OpenRouteService Directions API calls.
-The API key is read from the OPENROUTESERVICE_API_KEY environment variable
-and is never sent to or stored in the frontend.
+"""
+WISE Backend - Routing
+
+The ORS directions proxy stays behind the authenticated API so the secret key
+is never exposed. Calculated geometry is saved by ordered coordinate chain, so
+the website preview and the citizen mobile map reuse one result instead of
+spending Directions quota on every view.
 """
 
-import os
-import json
-import urllib.request
-import urllib.error
-from fastapi import APIRouter, Depends, HTTPException, Body
-from apps.utils.jwt import get_current_user
+from fastapi import APIRouter, Body, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from apps.database import get_db
 from apps.models.user import User
+from apps.schemas.route_geometry import ScheduleRouteResponse
+from apps.services.collection_schedule import (
+    apply_derived_statuses,
+    get_collection_schedule_by_id,
+)
+from apps.services.route_geometry import (
+    RoutingConfigError,
+    RoutingUnavailable,
+    build_schedule_route,
+    get_or_create_geometry,
+)
+from apps.utils.jwt import get_current_user
 
 router = APIRouter()
 
-ORS_DIRECTIONS_URL = "https://api.heigit.org/openrouteservice/v2/directions/driving-car/geojson"
 
-
-def _get_ors_key():
-    key = os.getenv("OPENROUTESERVICE_API_KEY", "")
-    if not key:
-        raise HTTPException(
-            status_code=503,
-            detail="Routing service is not configured. Contact the administrator."
-        )
-    return key
-
-
-@router.post("/directions")
-def get_route_directions(
-    payload: dict = Body(...),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Proxy a road-routing request to OpenRouteService.
-    Expected body: {"coordinates": [[lng, lat], [lng, lat], ...]}
-    Returns the raw GeoJSON from ORS. API key injected server-side.
-    """
-    coordinates = payload.get("coordinates")
+def _validate_coordinates(coordinates) -> None:
     if not coordinates or not isinstance(coordinates, list) or len(coordinates) < 2:
         raise HTTPException(status_code=400, detail="At least 2 coordinate pairs required.")
 
     for coord in coordinates:
         if not (isinstance(coord, (list, tuple)) and len(coord) == 2):
-            raise HTTPException(status_code=400, detail="Each coordinate must be [longitude, latitude].")
+            raise HTTPException(
+                status_code=400,
+                detail="Each coordinate must be [longitude, latitude].",
+            )
         lng, lat = float(coord[0]), float(coord[1])
         if not (-180 <= lng <= 180 and -90 <= lat <= 90):
             raise HTTPException(status_code=400, detail=f"Invalid coordinate: {coord}")
 
-    ors_key = _get_ors_key()
-    ors_body = json.dumps({"coordinates": coordinates}).encode("utf-8")
 
-    req = urllib.request.Request(ORS_DIRECTIONS_URL, data=ors_body, method="POST")
-    req.add_header("Authorization", ors_key)
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json, application/geo+json")
+@router.post("/directions")
+def get_route_directions(
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Proxy a road-routing request to OpenRouteService.
+
+    Expected body: {"coordinates": [[lng, lat], ...]}
+    Returns the ORS GeoJSON. A saved result for the same coordinate chain is
+    returned directly; the API key is injected server-side.
+    """
+    coordinates = payload.get("coordinates")
+    _validate_coordinates(coordinates)
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read()
-            return json.loads(raw)
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise HTTPException(status_code=502, detail=f"Routing service error ({exc.code}): {body[:300]}")
-    except urllib.error.URLError as exc:
-        raise HTTPException(status_code=504, detail=f"Could not reach routing service: {exc.reason}")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Routing proxy error: {str(exc)}")
+        return get_or_create_geometry(db, coordinates)
+    except RoutingConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RoutingUnavailable as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/schedule-geometry/{schedule_id}", response_model=ScheduleRouteResponse)
+def get_schedule_geometry(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Saved road geometry + ordered stops for one collection assignment.
+
+    Reads persisted geometry whenever it matches the assignment's current stop
+    coordinates; only a changed (or never-calculated) route reaches ORS.
+    """
+    schedule = get_collection_schedule_by_id(db, schedule_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Collection schedule not found.")
+
+    return build_schedule_route(db, schedule, apply_statuses=apply_derived_statuses)
