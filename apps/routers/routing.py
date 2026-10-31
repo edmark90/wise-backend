@@ -1,7 +1,7 @@
 """
 WISE Backend - Routing
 
-The ORS directions proxy stays behind the authenticated API so the secret key
+The OSRM directions proxy stays behind the authenticated API so the secret key
 is never exposed. Calculated geometry is saved by ordered coordinate chain, so
 the website preview and the citizen mobile map reuse one result instead of
 spending Directions quota on every view.
@@ -18,7 +18,6 @@ from apps.services.collection_schedule import (
     get_collection_schedule_by_id,
 )
 from apps.services.route_geometry import (
-    RoutingConfigError,
     RoutingUnavailable,
     build_schedule_route,
     get_or_create_geometry,
@@ -50,19 +49,17 @@ def get_route_directions(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Proxy a road-routing request to OpenRouteService.
+    Proxy a road-routing request to OSRM.
 
     Expected body: {"coordinates": [[lng, lat], ...]}
-    Returns the ORS GeoJSON. A saved result for the same coordinate chain is
-    returned directly; the API key is injected server-side.
+    Returns OSRM-derived GeoJSON. A saved result for the same coordinate chain is
+    returned directly; no API key is needed server-side.
     """
     coordinates = payload.get("coordinates")
     _validate_coordinates(coordinates)
 
     try:
         return get_or_create_geometry(db, coordinates)
-    except RoutingConfigError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
     except RoutingUnavailable as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
@@ -76,7 +73,7 @@ def get_schedule_geometry(
     """Saved road geometry + ordered stops for one collection assignment.
 
     Reads persisted geometry whenever it matches the assignment's current stop
-    coordinates; only a changed (or never-calculated) route reaches ORS.
+    coordinates; only a changed (or never-calculated) route reaches OSRM.
     """
     schedule = get_collection_schedule_by_id(db, schedule_id)
     if schedule is None:

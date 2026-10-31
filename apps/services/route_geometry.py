@@ -1,10 +1,10 @@
 """Shared road-route geometry for the website preview and the citizen app.
 
-One OpenRouteService result is saved per exact ordered coordinate chain and is
+One OSRM result is saved per exact ordered coordinate chain and is
 reused by every later viewer. A chain only changes when an admin edits a route
-or moves a stop, so citizens opening schedules never spend Directions quota.
+or moves a stop, so citizens opening schedules never spend routing quota.
 
-All geometry stays on the backend; the ORS API key is never exposed to either
+All geometry stays on the backend; no routing API key is exposed to either
 client.
 """
 
@@ -23,15 +23,13 @@ from sqlalchemy.orm import Session
 from apps.database import Base, engine
 from apps.models.route_geometry import RouteGeometry
 
-# Verified HeiGIT endpoint (the old api.openrouteservice.org host is retired).
-ORS_DIRECTIONS_URL = (
-    "https://api.heigit.org/openrouteservice/v2/directions/driving-car/geojson"
-)
-ORS_PROFILE = "driving-car"
-ORS_TIMEOUT_SECONDS = 15
+# OSRM routing engine (self-hosted, no API key, no quotas).
+OSRM_BASE_URL = os.getenv("OSRM_BASE_URL", "http://localhost:5000")
+OSRM_PROFILE = "driving"
+OSRM_TIMEOUT_SECONDS = 15
 
 # Dispatch depot: Arandia Street, Barangay Tunasan, Muntinlupa City.
-# Leaflet-style [latitude, longitude]; ORS coordinates are converted on the way out.
+# Leaflet-style [latitude, longitude]; routing coordinates are [lng, lat].
 DEPOT = {
     "name": "Tunasan Dispatch Depot",
     "address": "Arandia Street, Barangay Tunasan, Muntinlupa City",
@@ -46,10 +44,6 @@ _table_lock = threading.Lock()
 
 class RoutingUnavailable(Exception):
     """Raised when live road geometry cannot be calculated right now."""
-
-
-class RoutingConfigError(RoutingUnavailable):
-    """Raised when the backend has no OpenRouteService key configured."""
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +69,7 @@ def chain_hash(coordinates: Sequence[Sequence[float]]) -> str:
     canonical = [
         [round(float(c[0]), 6), round(float(c[1]), 6)] for c in coordinates
     ]
-    raw = json.dumps(canonical, separators=(",", ":")) + "|" + ORS_PROFILE
+    raw = json.dumps(canonical, separators=(",", ":")) + "|" + OSRM_PROFILE
     return sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -126,7 +120,7 @@ def save_geometry(
             legs=json.dumps(_legs_to_geojson(legs)) if legs else None,
             distance_meters=_int_or_none(summary.get("distance")),
             duration_seconds=_int_or_none(summary.get("duration")),
-            provider="openrouteservice",
+            provider="osrm",
         )
         db.add(row)
         db.commit()
@@ -142,37 +136,60 @@ def save_geometry(
 # OpenRouteService
 # ---------------------------------------------------------------------------
 
-def fetch_ors_geojson(
+def fetch_osrm_geojson(
     coordinates: Sequence[Sequence[float]],
-    timeout: int = ORS_TIMEOUT_SECONDS,
+    timeout: int = OSRM_TIMEOUT_SECONDS,
 ) -> dict:
-    """Call the HeiGIT Directions API with the backend-only key."""
-    key = os.getenv("OPENROUTESERVICE_API_KEY", "").strip()
-    if not key:
-        raise RoutingConfigError(
-            "Routing service is not configured. Contact the administrator."
-        )
+    """Call self-hosted OSRM and return ORS-compatible GeoJSON FeatureCollection."""
+    coord_str = ";".join(f"{c[0]},{c[1]}" for c in coordinates)
+    url = (
+        f"{OSRM_BASE_URL}/route/v1/{OSRM_PROFILE}/{coord_str}"
+        f"?geometries=geojson&overview=full&steps=false"
+    )
 
-    body = json.dumps({"coordinates": list(coordinates)}).encode("utf-8")
-    req = urllib.request.Request(ORS_DIRECTIONS_URL, data=body, method="POST")
-    req.add_header("Authorization", key)
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json, application/geo+json")
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Accept", "application/json")
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
+            data = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RoutingUnavailable(
-            f"Routing service error ({exc.code}): {detail[:300]}"
+            f"OSRM error ({exc.code}): {detail[:300]}"
         ) from exc
     except urllib.error.URLError as exc:
         raise RoutingUnavailable(
-            f"Could not reach routing service: {exc.reason}"
+            f"Could not reach OSRM: {exc.reason}"
         ) from exc
     except Exception as exc:  # malformed response / timeout
-        raise RoutingUnavailable(f"Routing proxy error: {exc}") from exc
+        raise RoutingUnavailable(f"OSRM proxy error: {exc}") from exc
+
+    if data.get("code") != "Ok" or not data.get("routes"):
+        raise RoutingUnavailable("OSRM returned no route")
+
+    route = data["routes"][0]
+    geom = route.get("geometry", {})
+    coords = geom.get("coordinates", [])  # OSRM: [lng, lat]
+
+    # Convert to ORS-compatible GeoJSON FeatureCollection so clients need no change.
+    geojson = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": coords,
+            },
+            "properties": {
+                "summary": {
+                    "distance": route.get("distance"),
+                    "duration": route.get("duration"),
+                }
+            }
+        }]
+    }
+    return geojson
 
 
 def get_or_create_geometry(
@@ -194,7 +211,7 @@ def get_or_create_geometry(
             except SQLAlchemyError:
                 db.rollback()
 
-    ors_geojson = fetch_ors_geojson(coordinates)
+    ors_geojson = fetch_osrm_geojson(coordinates)
     # Waypoints for leg splitting are internally [lat, lng], like the geometry.
     latlng_waypoints = [(float(c[1]), float(c[0])) for c in coordinates]
     save_geometry(db, key, ors_geojson, latlng_waypoints, schedule_id=schedule_id)
@@ -469,7 +486,7 @@ def build_schedule_route(db: Session, schedule, apply_statuses=None) -> dict:
 
     if cached is None:
         try:
-            ors_geojson = fetch_ors_geojson(coordinates)
+            ors_geojson = fetch_osrm_geojson(coordinates)
         except RoutingUnavailable as exc:
             payload["message"] = (
                 "Saved road route is not available and the routing service "

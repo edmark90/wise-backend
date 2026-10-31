@@ -10,7 +10,7 @@ _GeometryText = Text().with_variant(MEDIUMTEXT(), "mysql")
 class RouteGeometry(Base):
     """Saved road-route geometry for one ordered stop chain.
 
-    Geometry is keyed by a hash of the exact ORS coordinate chain (depot +
+    Geometry is keyed by a hash of the exact OSRM coordinate chain (depot +
     ordered stops), not by the schedule id. That lets the website preview and
     the citizen mobile map share one saved result for the same route, and it
     automatically invalidates when an admin moves or reorders a stop.
@@ -25,6 +25,6 @@ class RouteGeometry(Base):
     legs = Column(_GeometryText, nullable=True)
     distance_meters = Column(Integer, nullable=True)
     duration_seconds = Column(Integer, nullable=True)
-    provider = Column(String(50), nullable=False, default="openrouteservice")
+    provider = Column(String(50), nullable=False, default="osrm")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
