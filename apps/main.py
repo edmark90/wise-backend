@@ -4,10 +4,10 @@
 
 
 from contextlib import asynccontextmanager
-# Temporarily disabled to debug startup
-# from apps.routers.prediction import router as prediction_router
-# from apps.routers.health_model import router as health_model_router
-# from apps.services.model_service import model_service
+
+from apps.routers.prediction import router as prediction_router
+from apps.routers.health_model import router as health_model_router
+from apps.services.model_service import model_service
 from apps.routers.mobile_updates import router as mobile_updates_router
 # from apps.services.mobile_update import sync_update_reminders  # Temporarily disabled to debug startup
 from fastapi import FastAPI
@@ -43,9 +43,8 @@ from apps.middleware.error_handler import (
 async def lifespan(app: FastAPI):
     # Startup: Load the MobileNetV2 model ONLY ONCE
     try:
-        # Temporarily disabled to debug startup
-        # model_service.load_model()
-        print("[Lifespan] Model loading disabled for debugging")
+        model_service.load_model()
+        print("[Lifespan] Model loaded on startup")
     except Exception as e:
         print(f"[Lifespan Startup Warning] Model loading deferred or error: {e}")
     yield
@@ -328,9 +327,8 @@ app.include_router(notifications_router, prefix="/api/notifications", tags=["Not
 app.include_router(ai_guides_router, prefix="/api/ai-guides", tags=["AI Guides"])
 app.include_router(reports_router, prefix="/api/reports", tags=["Reports"])
 app.include_router(routing_router, prefix="/api/routing", tags=["Routing"])
-# Temporarily disabled to debug startup
-# app.include_router(prediction_router)
-# app.include_router(health_model_router)
+app.include_router(prediction_router, tags=["Prediction"])
+app.include_router(health_model_router, tags=["Health & Model Info"])
 
 
 @app.get("/")
