@@ -30,6 +30,7 @@ def login_user(db: Session, email: str, password: str):
             "fullname": user.fullname,
             "email": user.email,
             "phone": user.phone,
+            "barangay": user.barangay,
             "role": user.role,
             "profile_image": user.profile_image,
             "created_at": user.created_at.isoformat() if user.created_at else None

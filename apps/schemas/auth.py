@@ -10,6 +10,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str
     phone: Optional[str] = None
+    barangay: Optional[str] = None
 
 class LoginResponse(BaseModel):
     access_token: str
@@ -25,6 +26,7 @@ class UserResponse(BaseModel):
     fullname: str
     email: str
     phone: str | None
+    barangay: Optional[str] = None
     role: str
     profile_image: str | None
     created_at: str

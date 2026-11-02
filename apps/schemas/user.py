@@ -8,6 +8,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     phone: Optional[str] = None
+    barangay: Optional[str] = None
     role: str = "citizen"
     profile_image: Optional[str] = None
     is_active: bool = True
@@ -31,6 +32,7 @@ class UserUpdate(BaseModel):
     fullname: Optional[str] = None
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
+    barangay: Optional[str] = None
     role: Optional[str] = None
     profile_image: Optional[str] = None
     is_active: Optional[bool] = None
@@ -51,6 +53,7 @@ class UserListItem(BaseModel):
     fullname: str
     email: str
     phone: Optional[str] = None
+    barangay: Optional[str] = None
     role: str
     profile_image: Optional[str] = None
     is_active: bool = True
@@ -71,6 +74,7 @@ class UserResponse(BaseModel):
     fullname: str
     email: str
     phone: Optional[str] = None
+    barangay: Optional[str] = None
     role: str
     profile_image: Optional[str] = None
     is_active: bool = True

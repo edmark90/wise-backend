@@ -1,10 +1,16 @@
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Explicitly load .env from project root regardless of current working directory
+env_path = os.path.join(BASE_DIR, ".env")
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+else:
+    load_dotenv()
 
 DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
+DB_PORT = os.getenv("DB_PORT", "4000")
 DB_USERNAME = os.getenv("DB_USERNAME")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_DATABASE = os.getenv("DB_DATABASE")
@@ -19,7 +25,6 @@ SECRET_KEY = os.getenv("SECRET_KEY", "wise-secret-key-change-in-production")
 FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
 FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH")
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(BASE_DIR, "apps", "ai_model", "waste_classifier.tflite"))
 LABELS_PATH = os.getenv("LABELS_PATH", os.path.join(BASE_DIR, "apps", "ai_model", "labels.txt"))
 CLASS_MAPPING_PATH = os.getenv("CLASS_MAPPING_PATH", os.path.join(BASE_DIR, "apps", "ai_model", "class_mapping.json"))

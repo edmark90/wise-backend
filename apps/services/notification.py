@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import List, Optional
 
 from sqlalchemy import or_
@@ -533,19 +533,43 @@ def get_notifications(
 
 
 def get_notification_summary(db: Session) -> dict:
-    """Counts for the Notification Center summary cards."""
+    """Counts for the Notification Center summary cards and Dashboard alerts."""
     today = ph_today()
+    today_str = str(today)
     start = datetime.combine(today, time.min)
     end = datetime.combine(today, time.max)
+    # Account for UTC timestamps (func.now() in MySQL/TiDB defaults to UTC) and Manila wall-clock
+    start_utc = start - timedelta(hours=8)
+    end_utc = end - timedelta(hours=8)
+
     today_count = db.query(Notification).filter(
-        Notification.created_at >= start, Notification.created_at <= end,
+        or_(
+            Notification.created_at.between(start_utc, end_utc),
+            Notification.created_at.between(start, end),
+            Notification.collection_date == today_str,
+        )
     ).count()
-    delayed = db.query(CollectionSchedule).filter(
+
+    # Delayed routes count: notifications created for delayed collections OR schedules marked delayed for today
+    delayed_notifs = db.query(Notification).filter(
+        Notification.notification_type.in_(["Delayed Collection", "Collection Delayed"])
+    ).count()
+    delayed_scheds = db.query(CollectionSchedule).filter(
         CollectionSchedule.status == "Delayed",
+        CollectionSchedule.collection_date == today
     ).count()
-    cancelled = db.query(CollectionSchedule).filter(
+    delayed = max(delayed_notifs, delayed_scheds)
+
+    # Cancelled routes count: notifications created for cancelled collections OR schedules marked cancelled for today
+    cancelled_notifs = db.query(Notification).filter(
+        Notification.notification_type.in_(["Cancelled Collection", "Collection Cancelled"])
+    ).count()
+    cancelled_scheds = db.query(CollectionSchedule).filter(
         CollectionSchedule.status == "Cancelled",
+        CollectionSchedule.collection_date == today
     ).count()
+    cancelled = max(cancelled_notifs, cancelled_scheds)
+
     manual = db.query(Notification).filter(
         Notification.notification_type.in_(MANUAL_TYPES),
     ).count()

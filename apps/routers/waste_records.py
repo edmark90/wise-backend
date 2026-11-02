@@ -9,6 +9,8 @@ from apps.schemas.waste_record import (
     WasteRecordListResponse,
     WasteClassificationStats
 )
+from apps.schemas.leaderboard import BarangayLeaderboardResponse
+from apps.services.reports import get_barangay_recycling_leaderboard
 from apps.services.waste_record import (
     get_waste_records,
     get_waste_record_by_id,
@@ -66,6 +68,17 @@ def get_classification_stats(
 ):
     """Aggregate stats for the admin Waste Classification dashboard (3 cards)."""
     return get_waste_classification_stats(db)
+
+
+@router.get("/barangay-leaderboard", response_model=BarangayLeaderboardResponse)
+def get_waste_barangay_leaderboard(
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin)
+):
+    """Accurate per-barangay sorting & classification leaderboard filtered by month/year or all-time."""
+    return get_barangay_recycling_leaderboard(db, year, month)
 
 
 @router.get("/{record_id}", response_model=WasteRecordResponse)

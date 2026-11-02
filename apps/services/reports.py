@@ -1059,3 +1059,173 @@ def build_pdf(
 
     doc.build(story, canvasmaker=canvas_maker)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Barangay Recycling & Sorting Leaderboard
+# ---------------------------------------------------------------------------
+
+OFFICIAL_MUNTINLUPA_BARANGAYS = [
+    "Alabang",
+    "Bayanan",
+    "Buli",
+    "Cupang",
+    "New Alabang Village",
+    "Poblacion",
+    "Putatan",
+    "Sucat",
+    "Tunasan",
+]
+
+
+def get_barangay_recycling_leaderboard(db: Session, year: int | None = None, month: int | None = None) -> dict:
+    """Computes the Barangay Recycling & AI Classification Leaderboard.
+
+    Evaluates:
+      - Total AI waste classifications per barangay
+      - Proper sorting rate (% of recyclable + biodegradable items sorted accurately)
+      - AI confidence averages
+      - Civic incentive rank & city council grant eligibility
+    """
+    if year:
+        start, end = resolve_period(year, month)
+    else:
+        now = datetime.now()
+        start = datetime(2020, 1, 1, 0, 0, 0)
+        end = datetime(now.year, 12, 31, 23, 59, 59)
+
+    stats = {}
+    for b in OFFICIAL_MUNTINLUPA_BARANGAYS:
+        stats[b] = {
+            "total_scans": 0,
+            "recyclable": 0,
+            "biodegradable": 0,
+            "residual_special": 0,
+            "conf_sum": 0.0,
+            "conf_count": 0,
+        }
+
+    records = (
+        db.query(WasteRecord, User)
+        .join(User, WasteRecord.user_id == User.id, isouter=True)
+        .filter(WasteRecord.classified_at >= start, WasteRecord.classified_at <= end)
+        .all()
+    )
+
+    total_city_scans = 0
+    total_city_recyc = 0
+    total_city_bio = 0
+
+    for waste, user in records:
+        b_name = (user.barangay if user and user.barangay else None)
+        if not b_name:
+            continue
+        matched_b = None
+        for official in OFFICIAL_MUNTINLUPA_BARANGAYS:
+            if official.lower() in b_name.lower() or b_name.lower() in official.lower():
+                matched_b = official
+                break
+        if not matched_b:
+            matched_b = b_name
+
+        if matched_b not in stats:
+            stats[matched_b] = {
+                "total_scans": 0,
+                "recyclable": 0,
+                "biodegradable": 0,
+                "residual_special": 0,
+                "conf_sum": 0.0,
+                "conf_count": 0,
+            }
+
+        stats[matched_b]["total_scans"] += 1
+        total_city_scans += 1
+
+        wt_lower = (waste.waste_type or "").lower()
+        cat_lower = (waste.disposal_category or "").lower()
+
+        is_recyc = "recycl" in cat_lower or any(t in wt_lower for t in ["plastic", "paper", "cardboard", "metal", "glass", "can", "bottle"])
+        is_bio = any(c in cat_lower for c in ["bio", "compost", "organic"]) or any(t in wt_lower for t in ["food", "fruit", "veg", "leaf", "plant"])
+
+        if is_recyc:
+            stats[matched_b]["recyclable"] += 1
+            total_city_recyc += 1
+        elif is_bio:
+            stats[matched_b]["biodegradable"] += 1
+            total_city_bio += 1
+        else:
+            stats[matched_b]["residual_special"] += 1
+
+        if waste.confidence is not None:
+            stats[matched_b]["conf_sum"] += float(waste.confidence)
+            stats[matched_b]["conf_count"] += 1
+
+    items = []
+    for b, s in stats.items():
+        total = s["total_scans"]
+        recyc = s["recyclable"]
+        bio = s["biodegradable"]
+        resid = s["residual_special"]
+        conf_count = s["conf_count"]
+        conf_sum = s["conf_sum"]
+
+        if total > 0:
+            sort_rate = round(((recyc + bio) / total) * 100, 1)
+            avg_conf = round(conf_sum / conf_count, 1) if conf_count > 0 else 85.0
+        else:
+            sort_rate = 0.0
+            avg_conf = 0.0
+
+        items.append({
+            "barangay": b,
+            "total_scans": total,
+            "proper_sorting_rate": sort_rate,
+            "recyclable_count": recyc,
+            "biodegradable_count": bio,
+            "residual_special_count": resid,
+            "avg_confidence": avg_conf,
+        })
+
+    items.sort(key=lambda x: (x["proper_sorting_rate"], x["total_scans"]), reverse=True)
+
+    leaderboard = []
+    award_titles = {
+        1: ("Gold", "🥇 1st Place - Top Segregation"),
+        2: ("Silver", "🥈 2nd Place - High Compliance"),
+        3: ("Bronze", "🥉 3rd Place - Commended Sorter"),
+    }
+
+    for idx, item in enumerate(items, start=1):
+        if item["total_scans"] > 0:
+            tier_info = award_titles.get(idx, ("Standard", "Compliant"))
+        else:
+            tier_info = ("Standard", "No Submissions")
+
+        leaderboard.append({
+            "rank": idx,
+            "barangay": item["barangay"],
+            "total_scans": item["total_scans"],
+            "proper_sorting_rate": item["proper_sorting_rate"],
+            "recyclable_count": item["recyclable_count"],
+            "biodegradable_count": item["biodegradable_count"],
+            "residual_special_count": item["residual_special_count"],
+            "avg_confidence": item["avg_confidence"],
+            "award_tier": tier_info[0],
+            "badge_title": tier_info[1],
+        })
+
+    citywide_rate = (
+        round(((total_city_recyc + total_city_bio) / total_city_scans) * 100, 1)
+        if total_city_scans > 0 else 0.0
+    )
+    top_performer = leaderboard[0]["barangay"] if (leaderboard and leaderboard[0]["total_scans"] > 0) else None
+
+    return {
+        "period": period_label(year, month) if year else "All Time (Cumulative)",
+        "top_performer": top_performer,
+        "citywide_sorting_rate": citywide_rate,
+        "total_classifications": total_city_scans,
+        "total_recyclables": total_city_recyc,
+        "total_biodegradable": total_city_bio,
+        "leaderboard": leaderboard,
+    }

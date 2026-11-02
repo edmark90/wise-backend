@@ -9,9 +9,10 @@ from apps.config import (
     DB_DATABASE
 )
 
+port = DB_PORT if DB_PORT and str(DB_PORT).strip() and str(DB_PORT) != "None" else "4000"
 DATABASE_URL = (
     f"mysql+pymysql://{DB_USERNAME}:{DB_PASSWORD}"
-    f"@{DB_HOST}:{DB_PORT}/{DB_DATABASE}"
+    f"@{DB_HOST}:{port}/{DB_DATABASE}"
 )
 
 engine = create_engine(

@@ -44,6 +44,7 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
             "fullname": user.fullname,
             "email": user.email,
             "phone": user.phone,
+            "barangay": user.barangay,
             "role": user.role,
             "profile_image": user.profile_image,
             "created_at": user.created_at.isoformat() if user.created_at else None
@@ -87,6 +88,7 @@ def get_me(current_user: User = Depends(get_current_admin)):
         "fullname": current_user.fullname,
         "email": current_user.email,
         "phone": current_user.phone,
+        "barangay": current_user.barangay,
         "role": current_user.role,
         "profile_image": current_user.profile_image,
         "created_at": current_user.created_at.isoformat() if current_user.created_at else None

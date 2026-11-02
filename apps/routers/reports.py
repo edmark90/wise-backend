@@ -1,8 +1,9 @@
 import io
-"""Report export and summary endpoints for the admin Reports page.
+"""Report export, summary, and leaderboard endpoints for the admin Reports page.
 
 GET /api/reports/export?format=excel|pdf&year=&month=&types=barangay_performance,waste_trends,...
 GET /api/reports/summary?year=&month=
+GET /api/reports/barangay-leaderboard?year=&month=
 """
 from datetime import datetime
 import logging
@@ -16,11 +17,13 @@ from apps.database import get_db
 from apps.models.collection_schedule import CollectionSchedule
 from apps.models.user import User
 from apps.models.waste_record import WasteRecord
+from apps.schemas.leaderboard import BarangayLeaderboardResponse
 from apps.services.collection_schedule import derive_schedule_status
 from apps.services.reports import (
     REPORT_TYPES,
     build_excel,
     build_pdf,
+    get_barangay_recycling_leaderboard,
     period_label,
     resolve_period,
     schedule_stats,
@@ -167,3 +170,14 @@ def report_summary(
         ),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
+
+
+@router.get("/barangay-leaderboard", response_model=BarangayLeaderboardResponse)
+def get_leaderboard(
+    year: int | None = Query(None, ge=2000, le=2100),
+    month: int | None = Query(None, ge=1, le=12),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin),
+):
+    """Barangay Recycling & AI Classification Leaderboard for Civic Incentives and City Council Grants."""
+    return get_barangay_recycling_leaderboard(db, year, month)

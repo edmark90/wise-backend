@@ -14,7 +14,8 @@ def _apply_waste_record_filters(query, search, waste_type, disposal_category, us
             or_(
                 WasteRecord.waste_type.ilike(f"%{search}%"),
                 User.fullname.ilike(f"%{search}%"),
-                WasteRecord.disposal_category.ilike(f"%{search}%")
+                WasteRecord.disposal_category.ilike(f"%{search}%"),
+                User.barangay.ilike(f"%{search}%")
             )
         )
     if waste_type:
