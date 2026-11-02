@@ -53,8 +53,6 @@ class NotificationListItem(BaseModel):
     status: Optional[str] = None
     created_by_name: Optional[str] = None
     created_at: datetime
-    app_version: Optional[str] = None
-    apk_url: Optional[str] = None
 
 
 class NotificationResponse(BaseModel):
@@ -83,8 +81,6 @@ class NotificationResponse(BaseModel):
     created_by_name: Optional[str] = None
     created_at: datetime
     is_read: bool = False
-    app_version: Optional[str] = None
-    apk_url: Optional[str] = None
 
 
 
@@ -106,8 +102,6 @@ class MyNotificationListItem(BaseModel):
     collection_time: Optional[str] = None
     created_at: datetime
     is_read: bool = False
-    app_version: Optional[str] = None
-    apk_url: Optional[str] = None
 
 
 class NotificationListResponse(BaseModel):

@@ -8,8 +8,6 @@ from contextlib import asynccontextmanager
 from apps.routers.prediction import router as prediction_router
 from apps.routers.health_model import router as health_model_router
 from apps.services.model_service import model_service
-from apps.routers.mobile_updates import router as mobile_updates_router
-# from apps.services.mobile_update import sync_update_reminders  # Temporarily disabled to debug startup
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -61,42 +59,7 @@ def ensure_schema():
     """Idempotent startup migrations for new notification tables/columns."""
     try:
         with engine.connect() as conn:
-            #create mobile_updates tables
-            conn.execute(text("""
-    CREATE TABLE IF NOT EXISTS app_versions (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        version VARCHAR(30) NOT NULL,
-        version_code INT NOT NULL,
-        title VARCHAR(120) NOT NULL,
-        release_notes TEXT NULL,
-        apk_url VARCHAR(500) NOT NULL,
-        is_force TINYINT(1) NOT NULL DEFAULT 0,
-        created_by INT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY uq_ver (version),
-        UNIQUE KEY uq_vercode (version_code)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-"""))
 
-            conn.execute(text("""
-    CREATE TABLE IF NOT EXISTS app_update_announcements (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        title VARCHAR(120) NOT NULL,
-        message TEXT NOT NULL,
-        app_version_id INT UNSIGNED NOT NULL,
-        is_force TINYINT(1) NOT NULL DEFAULT 0,
-        reminder VARCHAR(20) NOT NULL DEFAULT 'None',
-        reminder_interval_minutes INT NOT NULL DEFAULT 0,
-        next_reminder_at DATETIME NULL,
-        sent_reminders INT NOT NULL DEFAULT 0,
-        max_reminders INT NOT NULL DEFAULT 3,
-        notification_id INT NULL,
-        created_by INT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-"""))
 
 
 
@@ -159,10 +122,6 @@ def ensure_schema():
             # notifications columns
             n_cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM notifications"))]
 
-            if "app_version" not in n_cols:
-                conn.execute(text("ALTER TABLE notifications ADD COLUMN app_version VARCHAR(30) NULL"))
-            if "apk_url" not in n_cols:
-                conn.execute(text("ALTER TABLE notifications ADD COLUMN apk_url VARCHAR(500) NULL"))
             conn.commit()
 
             notif_columns = {
@@ -274,9 +233,6 @@ def start_auto_status_worker():
                     if n:
                         print(f"[auto-status] emitted {n} automatic route notification(s)")
                     
-                    reminders_sent = sync_update_reminders(db)
-                    if reminders_sent > 0:
-                        print(f"[mobile-update] Processed background update reminders: {reminders_sent} push(es) sent")
                 finally:
                     db.close()
             except Exception as e:
@@ -315,7 +271,6 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
-app.include_router(mobile_updates_router, prefix="/api")
 # Profile router first so /api/users/profile/* is not shadowed by /api/users/{user_id}
 app.include_router(profile_router, prefix="/api/users", tags=["Profile"])
 app.include_router(users_router, prefix="/api/users", tags=["Users"])
