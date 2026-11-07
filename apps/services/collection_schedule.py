@@ -9,6 +9,7 @@ from apps.services.notification import (
     STATUS_TO_TYPE,
     handle_status_change,
     generate_route_notification,
+    generate_route_creation_notification,
     generate_reschedule_notification,
 )
 from apps.utils.ph_time import ph_now, ph_today
@@ -305,7 +306,13 @@ def _upsert_stops(db: Session, schedule: CollectionSchedule, stops_data: list):
     db.flush()
 
 
-def create_collection_schedule(db: Session, schedule_data: dict, notify: bool = True):
+def create_collection_schedule(
+    db: Session,
+    schedule_data: dict,
+    notify: bool = True,
+    created_by: Optional[int] = None,
+    created_by_name: Optional[str] = None,
+):
     """Create a new collection assignment with multiple stops, each having its own time."""
     stops_data = schedule_data.pop("stops", []) or []
     if not stops_data:
@@ -339,7 +346,11 @@ def create_collection_schedule(db: Session, schedule_data: dict, notify: bool = 
     db.refresh(db_schedule)
 
     if notify and db_schedule.status == "Upcoming":
-        generate_route_notification(db, db_schedule, "Upcoming Collection")
+        generate_route_creation_notification(
+            db, db_schedule,
+            created_by=created_by,
+            created_by_name=created_by_name,
+        )
 
     return db_schedule
 
@@ -350,7 +361,9 @@ def create_collection_schedules_batch(
     created_by: Optional[int] = None,
     created_by_name: Optional[str] = None,
 ):
-    """Create multiple collection assignments for a day in one call."""
+    """Create multiple collection assignments for a day in one call.
+    Generates exactly ONE consolidated notification per newly created route.
+    """
     created = []
     for schedule_data in schedules:
         stops_data = schedule_data.pop("stops", []) or []
@@ -383,14 +396,13 @@ def create_collection_schedules_batch(
         db.refresh(db_schedule)
         created.append(db_schedule)
 
-    if created:
-        first = created[0]
-        if first.status == "Upcoming":
-            generate_route_notification(
-                db, first, "Upcoming Collection",
+    # Generate one notification per route (not per stop or per barangay)
+    for s in created:
+        if s.status == "Upcoming":
+            generate_route_creation_notification(
+                db, s,
                 created_by=created_by,
                 created_by_name=created_by_name,
-                all_schedules=created,
             )
     return created
 

@@ -230,6 +230,82 @@ def handle_status_change(
         additional_message, created_by, created_by_name,
     )
 
+def generate_route_creation_notification(
+    db: Session,
+    schedule: CollectionSchedule,
+    created_by: Optional[int] = None,
+    created_by_name: Optional[str] = None,
+) -> Optional[Notification]:
+    """Generate one consolidated notification for a newly created collection route.
+
+    - Title: The actual route name (e.g. 'Tunasan Collection Route').
+    - Message: Brief route summary showing depot, first stop, and final stop
+      (e.g. 'New collection route created: Depot → First Stop → Final Stop.').
+    - Exactly ONE notification per route, NOT per barangay or stop.
+    - Deduplicated per (schedule.id, route_name).
+    """
+    route_name = (schedule.route_name or "").strip() or f"{schedule.barangay} Collection Route"
+    title = route_name
+
+    today = ph_today()
+    existing = db.query(Notification).filter(
+        Notification.schedule_id == schedule.id,
+        Notification.title == title,
+        Notification.status == "Sent",
+        Notification.created_at >= datetime.combine(today, time.min),
+        Notification.created_at <= datetime.combine(today, time.max),
+    ).first()
+    if existing:
+        return existing
+
+    depot_name = schedule.starting_point or "Depot"
+    stops = sorted(getattr(schedule, "stops", None) or [], key=lambda st: st.sequence or 0)
+
+    if len(stops) >= 2:
+        first_stop = stops[0].street or stops[0].barangay or "First Stop"
+        final_stop = stops[-1].street or stops[-1].barangay or "Final Stop"
+        message = f"New collection route created: {depot_name} \u2192 {first_stop} \u2192 {final_stop}."
+    elif len(stops) == 1:
+        single_stop = stops[0].street or stops[0].barangay or "Collection Stop"
+        message = f"New collection route created: {depot_name} \u2192 {single_stop}."
+    else:
+        dest = schedule.zone or schedule.barangay or "Designated Area"
+        message = f"New collection route created: {depot_name} \u2192 {dest}."
+
+    stop_bgys = [st.barangay for st in stops if st.barangay]
+    if not stop_bgys and schedule.barangay:
+        stop_bgys = [schedule.barangay]
+    affected = list(dict.fromkeys(stop_bgys))
+
+    time_str = _time_str(schedule)
+
+    notification = Notification(
+        title=title,
+        message=message,
+        notification_type="Upcoming Collection",
+        category="Route Updates",
+        target=", ".join(affected) if affected else schedule.barangay,
+        schedule_id=schedule.id,
+        route_name=route_name,
+        starting_point=schedule.starting_point,
+        affected_barangays=json.dumps(affected, ensure_ascii=False),
+        collection_date=str(schedule.collection_date) if schedule.collection_date else None,
+        collection_time=time_str,
+        assigned_personnel=schedule.assigned_personnel,
+        priority="Normal",
+        recipients=json.dumps(affected, ensure_ascii=False),
+        status="Sent",
+        created_by=created_by,
+        created_by_name=created_by_name,
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+
+    _push_to_barangays(db, affected, title, message, notification)
+    return notification
+
+
 def generate_reschedule_notification(
     db: Session,
     schedule: CollectionSchedule,
