@@ -11,6 +11,7 @@ client.
 import json
 import os
 import threading
+import time as _time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, time
@@ -25,6 +26,7 @@ from apps.models.route_geometry import RouteGeometry
 
 # OSRM routing engine (self-hosted, no API key, no quotas).
 OSRM_BASE_URL = os.getenv("OSRM_BASE_URL", "http://localhost:5000")
+OSRM_FALLBACK_URL = os.getenv("OSRM_FALLBACK_URL", "https://router.project-osrm.org")
 OSRM_PROFILE = "driving"
 OSRM_TIMEOUT_SECONDS = 15
 
@@ -89,6 +91,21 @@ def get_cached_geometry(db: Optional[Session], key: str) -> Optional[RouteGeomet
         return None
 
 
+def _extract_osrm_legs(route: dict) -> List[List[List[float]]]:
+    """Extract ordered [[lng, lat], ...] road points for each leg from OSRM steps."""
+    legs = []
+    for leg in route.get("legs", []):
+        pts = []
+        for step in leg.get("steps", []):
+            coords = (step.get("geometry") or {}).get("coordinates") or []
+            for c in coords:
+                if not pts or pts[-1] != c:
+                    pts.append(c)
+        if len(pts) >= 2:
+            legs.append(pts)
+    return legs
+
+
 def save_geometry(
     db: Optional[Session],
     key: str,
@@ -109,9 +126,17 @@ def save_geometry(
         if existing:
             return existing
 
+        feature = _feature_from_geojson(ors_geojson) or {}
+        props = feature.get("properties") or {}
+        legs_from_props = props.get("legs")
+
         latlngs = _latlngs_from_geojson(ors_geojson)
-        legs = split_route_into_legs(latlngs, waypoints) if latlngs else None
-        summary = _summary_from_geojson(ors_geojson) or {}
+        if legs_from_props:
+            legs = [[(float(pt[1]), float(pt[0])) for pt in leg] for leg in legs_from_props]
+        else:
+            legs = split_route_into_legs(latlngs, waypoints) if latlngs else None
+
+        summary = props.get("summary") or {}
 
         row = RouteGeometry(
             chain_hash=key,
@@ -133,44 +158,57 @@ def save_geometry(
 
 
 # ---------------------------------------------------------------------------
-# OpenRouteService
+# OpenRouteService / OSRM Proxy
 # ---------------------------------------------------------------------------
 
 def fetch_osrm_geojson(
     coordinates: Sequence[Sequence[float]],
     timeout: int = OSRM_TIMEOUT_SECONDS,
 ) -> dict:
-    """Call self-hosted OSRM and return ORS-compatible GeoJSON FeatureCollection."""
+    """Call OSRM with retry and fallback, returning ORS-compatible GeoJSON FeatureCollection."""
     coord_str = ";".join(f"{c[0]},{c[1]}" for c in coordinates)
-    url = (
-        f"{OSRM_BASE_URL}/route/v1/{OSRM_PROFILE}/{coord_str}"
-        f"?geometries=geojson&overview=full&steps=false"
-    )
 
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("Accept", "application/json")
+    urls_to_try = [OSRM_BASE_URL]
+    if OSRM_FALLBACK_URL and OSRM_FALLBACK_URL != OSRM_BASE_URL:
+        urls_to_try.append(OSRM_FALLBACK_URL)
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RoutingUnavailable(
-            f"OSRM error ({exc.code}): {detail[:300]}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise RoutingUnavailable(
-            f"Could not reach OSRM: {exc.reason}"
-        ) from exc
-    except Exception as exc:  # malformed response / timeout
-        raise RoutingUnavailable(f"OSRM proxy error: {exc}") from exc
+    last_error = None
+    data = None
 
-    if data.get("code") != "Ok" or not data.get("routes"):
-        raise RoutingUnavailable("OSRM returned no route")
+    for base_url in urls_to_try:
+        for attempt in range(1, 3):
+            url = (
+                f"{base_url}/route/v1/{OSRM_PROFILE}/{coord_str}"
+                f"?geometries=geojson&overview=full&steps=true"
+            )
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("Accept", "application/json")
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read())
+                if data and data.get("code") == "Ok" and data.get("routes"):
+                    break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                last_error = f"OSRM error ({exc.code}): {detail[:300]}"
+            except urllib.error.URLError as exc:
+                last_error = f"Could not reach OSRM ({base_url}): {exc.reason}"
+            except Exception as exc:
+                last_error = f"OSRM request error: {exc}"
+
+            if attempt < 2:
+                _time.sleep(0.4)
+
+        if data and data.get("code") == "Ok" and data.get("routes"):
+            break
+
+    if not data or data.get("code") != "Ok" or not data.get("routes"):
+        raise RoutingUnavailable(last_error or "OSRM returned no route")
 
     route = data["routes"][0]
     geom = route.get("geometry", {})
     coords = geom.get("coordinates", [])  # OSRM: [lng, lat]
+    legs_coords = _extract_osrm_legs(route)
 
     # Convert to ORS-compatible GeoJSON FeatureCollection so clients need no change.
     geojson = {
@@ -185,7 +223,8 @@ def fetch_osrm_geojson(
                 "summary": {
                     "distance": route.get("distance"),
                     "duration": route.get("duration"),
-                }
+                },
+                "legs": legs_coords if legs_coords else None,
             }
         }]
     }
@@ -268,48 +307,43 @@ def _int_or_none(value) -> Optional[int]:
 
 def _find_nearest_vertex_index(
     latlngs: Sequence[LatLng], target: LatLng, from_index: int
-) -> Optional[int]:
-    best_idx = None
+) -> int:
+    best_idx = max(0, from_index)
     best_dist = float("inf")
-    for i in range(max(0, from_index), len(latlngs)):
+    start_search = max(0, from_index - 3)
+    for i in range(start_search, len(latlngs)):
         d_lat = latlngs[i][0] - target[0]
         d_lng = latlngs[i][1] - target[1]
         dist = d_lat * d_lat + d_lng * d_lng
         if dist < best_dist:
             best_dist = dist
             best_idx = i
-    if best_idx is None:
-        return None
-    # ~1.5 km guard: never slice geometry that does not actually pass the stop.
-    if best_dist > 0.00018:
-        return None
-    return best_idx
+    return max(from_index, best_idx)
 
 
 def split_route_into_legs(
     latlngs: Sequence[LatLng], waypoints: Sequence[LatLng]
-) -> Optional[List[List[LatLng]]]:
+) -> List[List[LatLng]]:
     """Cut one road polyline into stop-to-stop legs at the scheduled waypoints."""
-    if not latlngs or len(latlngs) < 2 or not waypoints or len(waypoints) < 2:
-        return None
+    if not latlngs or len(latlngs) < 2:
+        return []
+    if not waypoints or len(waypoints) < 2:
+        return [list(latlngs)]
 
     cuts = [0]
     cursor = 0
-    for w in range(1, len(waypoints) - 1):
+    total_waypoints = len(waypoints)
+    for w in range(1, total_waypoints - 1):
         idx = _find_nearest_vertex_index(latlngs, waypoints[w], cursor)
-        if idx is None or idx < cursor:
-            return None
-        cuts.append(idx)
-        cursor = idx
+        cut_point = max(cursor, min(idx, len(latlngs) - 1))
+        cuts.append(cut_point)
+        cursor = cut_point
     cuts.append(len(latlngs) - 1)
 
     legs = []
     for i in range(len(cuts) - 1):
         start, end = cuts[i], cuts[i + 1]
         if start == end:
-            # Two scheduled stops share one polyline vertex. Emit a two-point
-            # leg so the leg count always equals (waypoints - 1): clients map a
-            # stop's waypoint_index straight onto this list.
             legs.append([latlngs[start], latlngs[start]])
         else:
             legs.append(list(latlngs[start:end + 1]))
@@ -494,17 +528,25 @@ def build_schedule_route(db: Session, schedule, apply_statuses=None) -> dict:
             )
             return payload
 
+        feature = _feature_from_geojson(ors_geojson) or {}
+        props = feature.get("properties") or {}
+        legs_from_props = props.get("legs")
+
         latlngs = _latlngs_from_geojson(ors_geojson)
-        legs = split_route_into_legs(latlngs, waypoints) if latlngs else None
-        payload["geometry"] = (_feature_from_geojson(ors_geojson) or {}).get("geometry")
+        if legs_from_props:
+            legs = [[(float(pt[1]), float(pt[0])) for pt in leg] for leg in legs_from_props]
+        else:
+            legs = split_route_into_legs(latlngs, waypoints) if latlngs else None
+
+        payload["geometry"] = feature.get("geometry")
         payload["legs"] = _legs_to_geojson(legs) if legs else None
-        summary = _summary_from_geojson(ors_geojson) or {}
+        summary = props.get("summary") or {}
         payload["distance_meters"] = _int_or_none(summary.get("distance"))
         payload["duration_seconds"] = _int_or_none(summary.get("duration"))
         save_geometry(db, key, ors_geojson, waypoints, schedule_id=schedule.id)
 
-    payload["is_segmented"] = bool(payload.get("legs"))
-    if not payload["is_segmented"]:
+    payload["is_segmented"] = bool(payload.get("legs") or payload.get("geometry"))
+    if not payload["is_segmented"] and len(waypoints) >= 2:
         warnings.append(
             "Road geometry could not be matched to the scheduled stops; "
             "the app will draw direct stop-to-stop lines."
