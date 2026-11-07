@@ -227,7 +227,12 @@ def create_schedule(
     current_user: User = Depends(get_current_admin)
 ):
     try:
-        return create_collection_schedule(db, schedule_data.model_dump())
+        return create_collection_schedule(
+            db,
+            schedule_data.model_dump(),
+            created_by=current_user.id,
+            created_by_name=getattr(current_user, 'fullname', getattr(current_user, 'full_name', ''))
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
