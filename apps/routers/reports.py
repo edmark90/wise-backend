@@ -1,33 +1,32 @@
-import io
-"""Report export, summary, and leaderboard endpoints for the admin Reports page.
+"""Report export, summary, preview, and leaderboard endpoints for the admin Reports page.
 
-GET /api/reports/export?format=excel|pdf&year=&month=&types=barangay_performance,waste_trends,...
+GET /api/reports/export?format=excel|pdf&year=&month=&types=...
 GET /api/reports/summary?year=&month=
+GET /api/reports/preview?type=&year=&month=
 GET /api/reports/barangay-leaderboard?year=&month=
 """
-from datetime import datetime
+import io
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from apps.database import get_db
-from apps.models.collection_schedule import CollectionSchedule
 from apps.models.user import User
-from apps.models.waste_record import WasteRecord
 from apps.schemas.leaderboard import BarangayLeaderboardResponse
-from apps.services.collection_schedule import derive_schedule_status
 from apps.services.reports import (
+    EXCEL_HEADERS,
     REPORT_TYPES,
+    TYPE_LABELS,
+    _data_for,
     build_excel,
     build_pdf,
     get_barangay_recycling_leaderboard,
+    get_report_summary_data,
     period_label,
     resolve_period,
-    schedule_stats,
-    waste_stats,
 )
 from apps.utils.jwt import get_current_admin
 
@@ -83,92 +82,69 @@ def report_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin),
 ):
-    """Quick summary metrics for the selected period."""
-    start, end = resolve_period(year, month)
-    waste = waste_stats(db, start, end)
-    schedule = schedule_stats(db, start, end)
+    """Authoritative summary metrics for the selected period.
 
-    total_collections = schedule["total_routes"]
-    completed_collections = schedule["completed"]
-    delayed_collections = schedule["delayed"]
-    completion_rate = schedule["completion_rate"]
-
-    waste_classifications = waste["total_records"]
-    avg_confidence = waste["avg_confidence"]
-
-    # Calculate recycling rate (recyclable waste / total classified waste)
-    recycling_rate = 0.0
-    if waste["per_class"]:
-        recyclable_count = 0
-        total_count = sum(waste["per_class"].values())
-        for waste_type, count in waste["per_class"].items():
-            wt_lower = (waste_type or "").lower()
-            if any(term in wt_lower for term in ["recyclable", "plastic", "paper", "cardboard", "metal", "glass", "can"]):
-                recyclable_count += count
-        if total_count > 0:
-            recycling_rate = round(recyclable_count / total_count * 100, 1)
-
-    # Barangay performance aggregation
-    barangay_stats = {}
-    schedules = (
-        db.query(CollectionSchedule)
-        .filter(CollectionSchedule.collection_date >= start.date(), CollectionSchedule.collection_date <= end.date())
-        .all()
-    )
-
-    for schedule_item in schedules:
-        barangay = schedule_item.barangay or "Unknown"
-        if barangay not in barangay_stats:
-            barangay_stats[barangay] = {"total": 0, "completed": 0}
-        barangay_stats[barangay]["total"] += 1
-        status = derive_schedule_status(schedule_item)
-        if status == "Completed":
-            barangay_stats[barangay]["completed"] += 1
-
-    top_barangay = "-"
-    best_rate = -1
-    total_barangays = len(barangay_stats)
-    efficiency_scores = []
-
-    for barangay, stats in barangay_stats.items():
-        if stats["total"] > 0:
-            efficiency = round(stats["completed"] / stats["total"] * 100, 1)
-            efficiency_scores.append(efficiency)
-            if efficiency > best_rate:
-                best_rate = efficiency
-                top_barangay = barangay
-
-    avg_efficiency = round(sum(efficiency_scores) / len(efficiency_scores), 1) if efficiency_scores else 0.0
+    Guaranteed identical to the figures exported in Excel and PDF.
+    """
+    summary = get_report_summary_data(db, year, month)
 
     return {
+        "period": summary["period"],
+        "total_collections": summary["total_collections"],
+        "completed_collections": summary["completed_collections"],
+        "delayed_collections": summary["delayed_collections"],
+        "cancelled_collections": summary["cancelled_collections"],
+        "upcoming_collections": summary["upcoming_collections"],
+        "completion_rate": summary["completion_rate"],
+        "waste_classifications": summary["waste_classifications"],
+        "recycling_rate": summary["recycling_rate"],
+        "recyclable_count": summary["recyclable_count"],
+        "avg_confidence": summary["avg_confidence"],
+        "low_confidence_count": summary["low_confidence_count"],
+        "top_barangay": summary["top_barangay"],
+        "total_barangays": summary["total_barangays"],
+        "efficiency_score": summary["efficiency_score"],
+        "users": summary["new_users"],
+        "generated_at": summary["generated_at"],
+        # Backward compatibility aliases
+        "waste_records": summary["waste_classifications"],
+        "waste_avg_confidence": summary["avg_confidence"],
+        "waste_low_confidence": summary["low_confidence_count"],
+        "waste_most_common_type": summary["most_common_type"],
+        "waste_per_class": summary["per_class"],
+        "collection_schedules": summary["total_collections"],
+        "routes_completed": summary["completed_collections"],
+        "routes_cancelled": summary["cancelled_collections"],
+        "routes_delayed": summary["delayed_collections"],
+        "routes_upcoming": summary["upcoming_collections"],
+    }
+
+
+@router.get("/preview")
+def report_preview(
+    type: str = Query("barangay_performance"),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int | None = Query(None, ge=1, le=12),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin),
+):
+    """Structured report table data for live interactive preview on the Reports page."""
+    if type not in REPORT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid report type: '{type}'")
+
+    start_ph, end_ph = resolve_period(year, month)
+    data = _data_for(db, start_ph, end_ph, [type])
+    rows = data.get(type, [])
+    headers = EXCEL_HEADERS.get(type, [])
+    label = TYPE_LABELS.get(type, type.replace("_", " ").title())
+
+    return {
+        "type": type,
+        "title": label,
         "period": period_label(year, month),
-        "total_collections": total_collections,
-        "completed_collections": completed_collections,
-        "delayed_collections": delayed_collections,
-        "completion_rate": completion_rate,
-        "waste_classifications": waste_classifications,
-        "recycling_rate": recycling_rate,
-        "avg_confidence": avg_confidence,
-        "top_barangay": top_barangay,
-        "total_barangays": total_barangays,
-        "efficiency_score": avg_efficiency,
-        # Backward compatibility
-        "waste_records": waste["total_records"],
-        "waste_avg_confidence": waste["avg_confidence"],
-        "waste_low_confidence": waste["low_confidence"],
-        "waste_most_common_type": waste["most_common_type"],
-        "waste_per_class": waste["per_class"],
-        "collection_schedules": schedule["total_routes"],
-        "routes_completed": schedule["completed"],
-        "routes_cancelled": schedule["cancelled"],
-        "routes_delayed": schedule["delayed"],
-        "routes_upcoming": schedule["upcoming"],
-        "users": (
-            db.query(func.count(User.id))
-            .filter(User.created_at >= start, User.created_at <= end)
-            .scalar() or 0
-        ),
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "headers": headers,
+        "rows": rows,
+        "total_records": len(rows),
     }
 
 
