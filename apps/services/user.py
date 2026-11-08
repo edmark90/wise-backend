@@ -71,7 +71,19 @@ def create_user(db: Session, user_data: dict):
     
     db_user = User(**user_data)
     db.add(db_user)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        if "role" in str(exc).lower() or "1265" in str(exc):
+            db.rollback()
+            from sqlalchemy import text
+            db.execute(text("ALTER TABLE users MODIFY COLUMN role VARCHAR(30) NOT NULL DEFAULT 'citizen'"))
+            db.commit()
+            db_user = User(**user_data)
+            db.add(db_user)
+            db.commit()
+        else:
+            raise
     db.refresh(db_user)
     return db_user
 
@@ -96,7 +108,23 @@ def update_user(db: Session, user_id: int, user_data: dict):
         if value is not None:
             setattr(db_user, key, value)
     
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        if "role" in str(exc).lower() or "1265" in str(exc):
+            db.rollback()
+            from sqlalchemy import text
+            db.execute(text("ALTER TABLE users MODIFY COLUMN role VARCHAR(30) NOT NULL DEFAULT 'citizen'"))
+            db.commit()
+            db_user = get_user_by_id(db, user_id)
+            for key, value in user_data.items():
+                if value is not None:
+                    setattr(db_user, key, value)
+            if raw_password and len(raw_password.strip()) >= 8:
+                db_user.password_hash = hash_password(raw_password.strip())
+            db.commit()
+        else:
+            raise
     db.refresh(db_user)
     return db_user
 

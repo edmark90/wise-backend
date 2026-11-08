@@ -89,6 +89,9 @@ def ensure_schema():
 
             # users columns
             cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM users"))]
+            conn.execute(text("ALTER TABLE users MODIFY COLUMN role VARCHAR(30) NOT NULL DEFAULT 'citizen'"))
+            conn.commit()
+            print("[schema] Widened users.role to VARCHAR(30)")
             if "is_active" not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1"))
                 conn.commit()
@@ -149,9 +152,14 @@ def ensure_schema():
                 conn.execute(text("ALTER TABLE notifications MODIFY COLUMN target TEXT"))
                 conn.commit()
                 print("[schema] Enlarged notifications.target to TEXT")
+            conn.execute(text("ALTER TABLE notifications MODIFY COLUMN notification_type VARCHAR(100) NULL"))
+            conn.execute(text("ALTER TABLE notifications MODIFY COLUMN category VARCHAR(50) NULL"))
+            conn.execute(text("ALTER TABLE notifications MODIFY COLUMN status VARCHAR(30) DEFAULT 'Sent'"))
+            conn.commit()
 
             # collection_schedule columns
             s_cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM collection_schedule"))]
+            conn.execute(text("ALTER TABLE collection_schedule MODIFY COLUMN status VARCHAR(30) NOT NULL DEFAULT 'Upcoming'"))
             if "route_name" not in s_cols:
                 conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN route_name VARCHAR(255) NULL"))
             if "truck_number" not in s_cols:
@@ -203,6 +211,7 @@ def ensure_schema():
             for col_name, ddl in stop_new_cols.items():
                 if col_name not in cs_cols:
                     conn.execute(text(f"ALTER TABLE collection_stops ADD COLUMN {col_name} {ddl}"))
+            conn.execute(text("ALTER TABLE collection_stops MODIFY COLUMN status VARCHAR(30) NOT NULL DEFAULT 'Upcoming'"))
             conn.commit()
             print("[schema] Ensured collection_stops collector columns")
 

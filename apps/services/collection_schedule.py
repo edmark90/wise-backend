@@ -877,6 +877,16 @@ def get_collector_dashboard_summary(db: Session, collector: User) -> dict:
 
     completed_routes_total = sum(1 for s in all_assigned if s.status == "Completed")
 
+    from apps.schemas.collection_schedule import CollectionScheduleResponse
+    today_serialized = [
+        CollectionScheduleResponse.model_validate(s).model_dump(mode="json")
+        for s in today_schedules
+    ]
+    upcoming_serialized = [
+        CollectionScheduleResponse.model_validate(s).model_dump(mode="json")
+        for s in upcoming_schedules[:10]
+    ]
+
     return {
         "collector": {
             "id": collector.id,
@@ -895,8 +905,8 @@ def get_collector_dashboard_summary(db: Session, collector: User) -> dict:
         "cancelled_stops_today": cancelled_stops_today,
         "total_assigned_routes": len(all_assigned),
         "completed_routes_total": completed_routes_total,
-        "today_schedules": today_schedules,
-        "upcoming_schedules": upcoming_schedules[:10],
+        "today_schedules": today_serialized,
+        "upcoming_schedules": upcoming_serialized,
     }
 
 
