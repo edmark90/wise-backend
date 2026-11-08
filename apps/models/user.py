@@ -12,7 +12,7 @@ class User(Base):
     email = Column(String(100), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     phone = Column(String(20))
-    role = Column(String(20), default="citizen")
+    role = Column(String(30), default="citizen")
     profile_image = Column(Text, nullable=True)
     barangay = Column(String(100), nullable=True)
     zone = Column(String(100), nullable=True)

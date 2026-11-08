@@ -14,7 +14,7 @@ class CollectionStop(Base):
     street = Column(String(255), nullable=False, default="")
     sequence = Column(Integer, nullable=False, default=1)
     collection_time = Column(Time, nullable=True)
-    status = Column(String(20), default="Upcoming")
+    status = Column(String(30), default="Upcoming")
     remarks = Column(Text, nullable=True)
     arriving_at = Column(DateTime, nullable=True)
     arrived_at = Column(DateTime, nullable=True)
