@@ -78,7 +78,7 @@ def derive_schedule_status(schedule, now: Optional[datetime] = None) -> str:
         non_cancelled = [s for s in stop_statuses if s != "Cancelled"]
         if not non_cancelled:
             return "Cancelled"
-        if all(s == "Completed" for s in non_cancelled):
+        if all(s in ("Completed", "Arrived") for s in non_cancelled):
             return "Completed"
         if any(s == "Arrived" for s in non_cancelled):
             return "Arrived"
@@ -648,6 +648,12 @@ def set_schedule_status(
         return None
 
     now = ph_now()
+    today = ph_today()
+    if schedule.collection_date and schedule.collection_date > today and status in ("Arriving", "Arrived", "Completed"):
+        raise ValueError(
+            f"Cannot mark route as {status} before its scheduled collection date ({schedule.collection_date}). "
+            "Only Delay or Cancel is allowed in advance."
+        )
     effective_reason = reason_other if (reason == "Others" and reason_other) else reason
 
     if status in ("Cancelled", "Delayed") and not (effective_reason or additional_message):
@@ -734,8 +740,15 @@ def update_stop_status_action(
     if normalized not in valid_statuses:
         raise ValueError(f"Invalid stop status '{new_status}'. Allowed: {', '.join(valid_statuses)}")
 
-    if stop.status == "Cancelled" and normalized == "Completed":
-        raise ValueError("Cannot mark a cancelled stop as Completed.")
+    if stop.status == "Cancelled" and normalized in ("Arriving", "Arrived", "Completed"):
+        raise ValueError(f"Cannot mark a cancelled stop as {normalized}.")
+
+    today = ph_today()
+    if schedule.collection_date and schedule.collection_date > today and normalized in ("Arriving", "Arrived", "Completed"):
+        raise ValueError(
+            f"Cannot mark stop as {normalized} before the collection date ({schedule.collection_date}). "
+            "Only Delay or Cancel is allowed before the scheduled day."
+        )
 
     effective_reason = reason_other if (reason == "Others" and reason_other) else reason
     if normalized in ("Cancelled", "Delayed") and not (effective_reason or additional_message):
@@ -747,15 +760,18 @@ def update_stop_status_action(
 
     if normalized == "Arriving":
         stop.arriving_at = stop.arriving_at or now
-    elif normalized == "Arrived":
+    elif normalized in ("Arrived", "Completed"):
         stop.arriving_at = stop.arriving_at or now
         stop.arrived_at = stop.arrived_at or now
-    elif normalized == "Completed":
-        stop.arriving_at = stop.arriving_at or now
-        stop.arrived_at = stop.arrived_at or now
-        stop.completed_at = now
+        if normalized == "Completed":
+            stop.completed_at = stop.completed_at or now
         if additional_message:
             stop.remarks = additional_message
+        # Mark earlier 'Arrived' stops on this route as 'Completed'
+        for prev_st in (schedule.stops or []):
+            if prev_st.id != stop.id and (prev_st.sequence or 0) < (stop.sequence or 0) and prev_st.status == "Arrived":
+                prev_st.status = "Completed"
+                prev_st.completed_at = prev_st.completed_at or now
         # Record in collection_history for dashboard metrics
         try:
             area_label = f"{stop.street}, {stop.barangay}".strip(", ") if stop.street else stop.barangay
@@ -765,7 +781,7 @@ def update_stop_status_action(
                 collection_date=datetime.combine(schedule.collection_date, stop.collection_time or schedule.collection_time or time(8, 0)),
                 area=area_label,
                 completion_date=now,
-                remarks=f"Completed by {current_user.fullname}",
+                remarks=f"Arrived/Completed by {current_user.fullname}",
             )
             db.add(history_entry)
         except Exception:
@@ -795,9 +811,20 @@ def update_stop_status_action(
 
     db.flush()
 
-    # Re-evaluate parent schedule status from all stops
-    parent_status = derive_schedule_status(schedule, now)
-    schedule.status = parent_status
+    # If all non-cancelled stops have now been confirmed Arrived (or Completed),
+    # the entire route is automatically Completed!
+    non_cancelled_stops = [st for st in (schedule.stops or []) if st.status != "Cancelled"]
+    route_auto_completed = False
+    if non_cancelled_stops and all(st.status in ("Arrived", "Completed") for st in non_cancelled_stops):
+        for st in non_cancelled_stops:
+            st.status = "Completed"
+            st.completed_at = st.completed_at or now
+        schedule.status = "Completed"
+        route_auto_completed = True
+    else:
+        parent_status = derive_schedule_status(schedule, now)
+        schedule.status = parent_status
+
     db.commit()
     db.refresh(stop)
     db.refresh(schedule)
@@ -808,13 +835,24 @@ def update_stop_status_action(
             db,
             schedule,
             stop,
-            normalized,
+            "Completed" if route_auto_completed else normalized,
             reason=reason,
             reason_other=reason_other,
             additional_message=additional_message,
             created_by=current_user.id,
             created_by_name=current_user.fullname,
         )
+    if route_auto_completed:
+        try:
+            handle_status_change(
+                db,
+                schedule,
+                "Completed",
+                created_by=current_user.id,
+                created_by_name=current_user.fullname,
+            )
+        except Exception:
+            pass
 
     return stop
 
@@ -866,7 +904,7 @@ def get_collector_dashboard_summary(db: Session, collector: User) -> dict:
         for st in stops:
             total_stops_today += 1
             st_status = (st.status or "Upcoming").strip()
-            if st_status == "Completed":
+            if st_status in ("Completed", "Arrived"):
                 completed_stops_today += 1
             elif st_status == "Delayed":
                 delayed_stops_today += 1

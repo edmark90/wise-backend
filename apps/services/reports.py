@@ -674,12 +674,28 @@ def _schedule_rows(db: Session, start_ph: datetime, end_ph: datetime) -> list[li
         .all()
     )
 
+    collector_ids = {
+        r.assigned_collector_id
+        for r in schedules
+        if getattr(r, "assigned_collector_id", None)
+    }
+    collector_name_by_id: dict[int, str] = {}
+    if collector_ids:
+        for u in db.query(User).filter(User.id.in_(collector_ids)).all():
+            collector_name_by_id[u.id] = u.fullname or u.email or f"Collector #{u.id}"
+
     result = []
     for r in schedules:
         covered = _get_schedule_covered_barangays(r)
         bgy_display = ", ".join(covered) if covered else (r.barangay or "—")
         zn = r.zone or "—"
         starting = r.starting_point or zn
+
+        assigned_name = (
+            r.assigned_personnel
+            or collector_name_by_id.get(getattr(r, "assigned_collector_id", None))
+            or "—"
+        )
 
         status_val = derive_schedule_status(r)
         if r.remarks:
@@ -700,12 +716,237 @@ def _schedule_rows(db: Session, start_ph: datetime, end_ph: datetime) -> list[li
             zn,
             r.route_name or f"{bgy_display} Route",
             starting or "—",
-            r.assigned_personnel or "—",
+            assigned_name,
             status_val,
             rem,
         ])
 
     return result
+
+
+def _collector_pdf_report_data(db: Session, start_ph: datetime, end_ph: datetime) -> dict:
+    """Gather Collector Roster & Operational Status Summary and Assigned Route Verification Log for PDF export."""
+    collectors = (
+        db.query(User)
+        .filter(func.lower(User.role) == "collector")
+        .order_by(User.fullname.asc())
+        .all()
+    )
+
+    schedules = (
+        db.query(CollectionSchedule)
+        .options(joinedload(CollectionSchedule.stops))
+        .filter(
+            CollectionSchedule.collection_date >= start_ph.date(),
+            CollectionSchedule.collection_date <= end_ph.date(),
+        )
+        .order_by(
+            CollectionSchedule.collection_date.asc(),
+            CollectionSchedule.collection_time.asc(),
+        )
+        .all()
+    )
+
+    roster_stats: dict[str, dict] = {}
+    id_to_key: dict[int, str] = {}
+    name_to_key: dict[str, str] = {}
+
+    for c in collectors:
+        key = f"user_{c.id}"
+        c_name = (c.fullname or c.email or f"Collector #{c.id}").strip()
+        contact_parts = [p for p in (c.email, c.phone) if p]
+        contact_str = " / ".join(contact_parts) if contact_parts else "—"
+        id_to_key[c.id] = key
+        name_to_key[c_name.lower()] = key
+        roster_stats[key] = {
+            "name": c_name,
+            "contact": contact_str,
+            "home_barangay": c.barangay or "Citywide",
+            "is_active": bool(c.is_active),
+            "barangays": set([c.barangay] if c.barangay else []),
+            "total_routes": 0,
+            "completed": 0,
+            "in_progress": 0,
+            "upcoming": 0,
+            "delayed": 0,
+            "cancelled": 0,
+            "total_stops": 0,
+            "confirmed_stops": 0,
+        }
+
+    route_log_rows: list[list] = []
+
+    for s in schedules:
+        cid = getattr(s, "assigned_collector_id", None)
+        raw_personnel = (s.assigned_personnel or "").strip()
+
+        matched_key = None
+        if cid and cid in id_to_key:
+            matched_key = id_to_key[cid]
+        elif raw_personnel and raw_personnel.lower() in name_to_key:
+            matched_key = name_to_key[raw_personnel.lower()]
+        elif raw_personnel:
+            matched_key = f"team_{raw_personnel.lower()}"
+            if matched_key not in roster_stats:
+                roster_stats[matched_key] = {
+                    "name": raw_personnel,
+                    "contact": "Dispatch Team / Crew",
+                    "home_barangay": s.barangay or "Citywide",
+                    "is_active": True,
+                    "barangays": set(),
+                    "total_routes": 0,
+                    "completed": 0,
+                    "in_progress": 0,
+                    "upcoming": 0,
+                    "delayed": 0,
+                    "cancelled": 0,
+                    "total_stops": 0,
+                    "confirmed_stops": 0,
+                }
+
+        covered = _get_schedule_covered_barangays(s)
+        bgy_display = ", ".join(covered) if covered else (s.barangay or "—")
+        r_status = derive_schedule_status(s)
+
+        stops = list(s.stops or [])
+        active_stops = [st for st in stops if (st.status or "") != "Cancelled"]
+        confirmed_cnt = sum(1 for st in active_stops if (st.status or "") in ("Arrived", "Completed"))
+        delayed_stop_cnt = sum(1 for st in stops if (st.status or "") == "Delayed")
+        cancelled_stop_cnt = sum(1 for st in stops if (st.status or "") == "Cancelled")
+
+        if matched_key and matched_key in roster_stats:
+            st_entry = roster_stats[matched_key]
+            st_entry["total_routes"] += 1
+            for b in covered:
+                if b:
+                    st_entry["barangays"].add(b)
+            if r_status == "Completed":
+                st_entry["completed"] += 1
+            elif r_status == "In Progress":
+                st_entry["in_progress"] += 1
+            elif r_status == "Delayed":
+                st_entry["delayed"] += 1
+            elif r_status == "Cancelled":
+                st_entry["cancelled"] += 1
+            else:
+                st_entry["upcoming"] += 1
+            st_entry["total_stops"] += len(active_stops)
+            st_entry["confirmed_stops"] += confirmed_cnt
+            assigned_display = st_entry["name"]
+        else:
+            assigned_display = "Unassigned"
+
+        if active_stops:
+            stop_progress_str = f"{confirmed_cnt}/{len(active_stops)} Confirmed"
+            if delayed_stop_cnt > 0:
+                stop_progress_str += f" ({delayed_stop_cnt} Delayed)"
+        elif stops and cancelled_stop_cnt == len(stops):
+            stop_progress_str = f"0/{len(stops)} (Cancelled)"
+        else:
+            stop_progress_str = "Direct Route"
+
+        # Build concise field verification remarks from stop reasons or route remarks
+        stop_notes = []
+        for st in stops:
+            if getattr(st, "delay_reason", None):
+                stop_notes.append(f"{st.stop_name}: Delayed ({st.delay_reason})")
+            elif getattr(st, "cancellation_reason", None):
+                stop_notes.append(f"{st.stop_name}: Cancelled ({st.cancellation_reason})")
+        if stop_notes:
+            field_remarks = "; ".join(stop_notes[:2])
+        elif s.remarks:
+            field_remarks = s.remarks
+        elif r_status == "Completed":
+            field_remarks = "All stops confirmed arrived — Route Completed"
+        elif r_status == "In Progress":
+            field_remarks = "Collector actively servicing stops"
+        elif r_status == "Delayed":
+            field_remarks = "Collection delayed on route"
+        elif r_status == "Cancelled":
+            field_remarks = "Collection route cancelled"
+        else:
+            field_remarks = "Scheduled — Awaiting collection day"
+
+        dt_str = s.collection_date.strftime("%Y-%m-%d") if s.collection_date else "—"
+        if s.collection_time:
+            dt_str += f" {s.collection_time.strftime('%I:%M %p')}"
+
+        route_log_rows.append([
+            dt_str,
+            assigned_display,
+            s.route_name or f"{bgy_display} Route",
+            bgy_display,
+            stop_progress_str,
+            r_status,
+            field_remarks,
+        ])
+
+    roster_rows: list[list] = []
+    for key, st in roster_stats.items():
+        tot = st["total_routes"]
+        comp = st["completed"]
+        in_prog = st["in_progress"]
+        upcom = st["upcoming"]
+        dly = st["delayed"]
+        canc = st["cancelled"]
+        comp_rate = round(comp / tot * 100, 1) if tot > 0 else 0.0
+
+        bgy_cov = ", ".join(sorted(st["barangays"])) if st["barangays"] else st["home_barangay"]
+        stops_str = f"{st['confirmed_stops']}/{st['total_stops']} Stops" if st["total_stops"] > 0 else "0 Stops"
+
+        if not st["is_active"]:
+            col_status = "Inactive"
+        elif tot == 0:
+            col_status = "Standby (Unassigned)"
+        elif in_prog > 0:
+            col_status = "In Progress"
+        elif dly > 0:
+            col_status = "Delayed"
+        elif comp == tot and tot > 0:
+            col_status = "Completed"
+        elif comp > 0 and upcom > 0:
+            col_status = "In Progress"
+        elif canc == tot and tot > 0:
+            col_status = "Cancelled"
+        else:
+            col_status = "Scheduled"
+
+        roster_rows.append([
+            st["name"],
+            st["contact"],
+            bgy_cov,
+            tot,
+            comp,
+            f"{dly} / {canc}",
+            stops_str,
+            f"{comp_rate:.1f}%",
+            col_status,
+        ])
+
+    return {
+        "roster_headers": [
+            "Collector / Crew",
+            "Contact / Account",
+            "Barangay Coverage",
+            "Assigned Routes",
+            "Completed",
+            "Delayed / Canc.",
+            "Confirmed Stops",
+            "Completion Rate",
+            "Collector Status",
+        ],
+        "roster_rows": roster_rows,
+        "route_log_headers": [
+            "Date & Time",
+            "Assigned Collector",
+            "Route Name",
+            "Barangays Serviced",
+            "Stop Confirmation",
+            "Route Status",
+            "Field Verification & Remarks",
+        ],
+        "route_log_rows": route_log_rows,
+    }
 
 
 def _legacy_waste_rows(db: Session, start_ph: datetime, end_ph: datetime) -> list[list]:
@@ -1459,6 +1700,125 @@ def build_pdf(
         table.setStyle(TableStyle(style_cmds))
         story.append(table)
         story.append(Spacer(1, 10))
+
+    # 4. Collector Personnel Assignment & Operational Status Section (PDF-only)
+    collector_pdf = _collector_pdf_report_data(db, start_ph, end_ph)
+    roster_headers = collector_pdf["roster_headers"]
+    roster_rows = collector_pdf["roster_rows"]
+    route_log_headers = collector_pdf["route_log_headers"]
+    route_log_rows = collector_pdf["route_log_rows"]
+
+    story.append(PageBreak())
+    story.append(Paragraph("Collector Personnel Assignment & Operational Status", styles["SecHeader"]))
+    story.append(
+        Paragraph(
+            f"{len(roster_rows)} Collector/Crew record{'s' if len(roster_rows) != 1 else ''} · "
+            f"{len(route_log_rows)} Assigned Route{'s' if len(route_log_rows) != 1 else ''} recorded for {label} · Field Operations Verification",
+            styles["SecSub"],
+        )
+    )
+
+    # 4A. Collector Roster & Workload Status Summary Table
+    roster_props = [26, 30, 28, 16, 15, 16, 20, 17, 22]
+    roster_tot_p = sum(roster_props)
+    roster_col_widths = [(p / roster_tot_p) * _CONTENT_W for p in roster_props]
+
+    roster_table_rows = [[Paragraph(h, styles["TH"]) for h in roster_headers]]
+    if not roster_rows:
+        roster_table_rows.append(
+            [Paragraph("No registered collectors or assigned personnel found for the selected period.", styles["Empty"])]
+            + [""] * (len(roster_headers) - 1)
+        )
+    else:
+        for row in roster_rows:
+            cells = []
+            for c_idx, val in enumerate(row):
+                val_str = str(val) if val is not None else "—"
+                if c_idx in (3, 4, 7):
+                    c_style = styles["TD_R"]
+                elif c_idx in (5, 6, 8):
+                    c_style = styles["TD_C"]
+                else:
+                    c_style = styles["TD_L"]
+                cells.append(Paragraph(val_str, c_style))
+            roster_table_rows.append(cells)
+
+    roster_table = Table(roster_table_rows, colWidths=roster_col_widths, repeatRows=1)
+    roster_style_cmds = [
+        ("BACKGROUND", (0, 0), (-1, 0), _COLOR_BLUE),
+        ("TEXTCOLOR", (0, 0), (-1, 0), _COLOR_WHITE),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.4, _COLOR_BORDER),
+        ("LINEBELOW", (0, 0), (-1, 0), 1.2, _COLOR_ACCENT),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3.5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3.5),
+    ]
+    if roster_rows:
+        for r_i in range(1, len(roster_table_rows)):
+            if r_i % 2 == 0:
+                roster_style_cmds.append(("BACKGROUND", (0, r_i), (-1, r_i), _COLOR_ALT_ROW))
+    else:
+        roster_style_cmds.append(("SPAN", (0, 1), (-1, 1)))
+        roster_style_cmds.append(("ALIGN", (0, 1), (-1, 1), "CENTER"))
+    roster_table.setStyle(TableStyle(roster_style_cmds))
+    story.append(roster_table)
+    story.append(Spacer(1, 12))
+
+    # 4B. Assigned Collector Route & Stop Confirmation Log Table
+    story.append(Paragraph("Assigned Collector Route & Stop Confirmation Log", styles["SecHeader"]))
+    story.append(
+        Paragraph(
+            f"Detailed stop-level arrival confirmation and route status per assigned collector for {label}",
+            styles["SecSub"],
+        )
+    )
+
+    log_props = [22, 26, 26, 26, 22, 18, 42]
+    log_tot_p = sum(log_props)
+    log_col_widths = [(p / log_tot_p) * _CONTENT_W for p in log_props]
+
+    log_table_rows = [[Paragraph(h, styles["TH"]) for h in route_log_headers]]
+    if not route_log_rows:
+        log_table_rows.append(
+            [Paragraph("No scheduled collection routes found for the selected period.", styles["Empty"])]
+            + [""] * (len(route_log_headers) - 1)
+        )
+    else:
+        for row in route_log_rows:
+            cells = []
+            for c_idx, val in enumerate(row):
+                val_str = str(val) if val is not None else "—"
+                if c_idx in (0, 4, 5):
+                    c_style = styles["TD_C"]
+                else:
+                    c_style = styles["TD_L"]
+                cells.append(Paragraph(val_str, c_style))
+            log_table_rows.append(cells)
+
+    log_table = Table(log_table_rows, colWidths=log_col_widths, repeatRows=1)
+    log_style_cmds = [
+        ("BACKGROUND", (0, 0), (-1, 0), _COLOR_BLUE),
+        ("TEXTCOLOR", (0, 0), (-1, 0), _COLOR_WHITE),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.4, _COLOR_BORDER),
+        ("LINEBELOW", (0, 0), (-1, 0), 1.2, _COLOR_ACCENT),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3.5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3.5),
+    ]
+    if route_log_rows:
+        for r_i in range(1, len(log_table_rows)):
+            if r_i % 2 == 0:
+                log_style_cmds.append(("BACKGROUND", (0, r_i), (-1, r_i), _COLOR_ALT_ROW))
+    else:
+        log_style_cmds.append(("SPAN", (0, 1), (-1, 1)))
+        log_style_cmds.append(("ALIGN", (0, 1), (-1, 1), "CENTER"))
+    log_table.setStyle(TableStyle(log_style_cmds))
+    story.append(log_table)
+    story.append(Spacer(1, 10))
 
     def canvas_maker(*args, **kwargs):
         c = NumberedCanvas(*args, **kwargs)
