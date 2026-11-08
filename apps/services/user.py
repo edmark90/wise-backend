@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session, load_only
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from typing import Optional
 from apps.models.user import User
 from apps.utils.password import hash_password
@@ -12,11 +12,10 @@ def get_users(
     role: Optional[str] = None
 ):
     """Get users with pagination, search, and role filtering.
-    Only selects essential columns (id, fullname, email, role) for list performance.
+    Only selects essential columns for list performance.
     """
-    # Use load_only to avoid SELECT * and skip password_hash and profile_image
     query = db.query(User).options(
-        load_only(User.id, User.fullname, User.email, User.phone, User.role, User.is_active, User.created_at)
+        load_only(User.id, User.fullname, User.email, User.phone, User.barangay, User.role, User.is_active, User.created_at)
     )
     
     if search:
@@ -33,8 +32,24 @@ def get_users(
     
     total = query.count()
     users = query.order_by(User.id.asc()).offset(skip).limit(limit).all()
+
+    # Global role counts for dashboard stat cards
+    role_rows = db.query(User.role, func.count(User.id)).group_by(User.role).all()
+    counts = {"admin": 0, "citizen": 0, "collector": 0, "total": 0}
+    for r_name, cnt in role_rows:
+        key = (r_name or "citizen").lower()
+        counts[key] = counts.get(key, 0) + int(cnt)
+        counts["total"] += int(cnt)
     
-    return {"users": users, "total": total}
+    return {"users": users, "total": total, "role_counts": counts}
+
+
+def get_active_collectors(db: Session, include_inactive: bool = False):
+    """Return collector accounts for assignment dropdowns."""
+    query = db.query(User).filter(User.role == "collector")
+    if not include_inactive:
+        query = query.filter(User.is_active.is_(True))
+    return query.order_by(User.fullname.asc()).all()
 
 def get_user_by_id(db: Session, user_id: int):
     """Get a user by ID."""
@@ -72,6 +87,11 @@ def update_user(db: Session, user_id: int, user_data: dict):
         if existing_user:
             return None
     
+    # If updating password, hash and set password_hash
+    raw_password = user_data.pop("password", None)
+    if raw_password and len(raw_password.strip()) >= 8:
+        db_user.password_hash = hash_password(raw_password.strip())
+
     for key, value in user_data.items():
         if value is not None:
             setattr(db_user, key, value)

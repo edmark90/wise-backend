@@ -27,10 +27,19 @@ class UserCreate(BaseModel):
             raise ValueError('Phone must contain only digits, +, -, or spaces')
         return v
 
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v):
+        allowed = ('admin', 'citizen', 'collector')
+        if v and v.lower() not in allowed:
+            raise ValueError(f"Role must be one of: {', '.join(allowed)}")
+        return v.lower() if v else 'citizen'
+
 
 class UserUpdate(BaseModel):
     fullname: Optional[str] = None
     email: Optional[EmailStr] = None
+    password: Optional[str] = None
     phone: Optional[str] = None
     barangay: Optional[str] = None
     role: Optional[str] = None
@@ -43,6 +52,16 @@ class UserUpdate(BaseModel):
         if v and not v.isdigit() and not v.replace('+', '').replace('-', '').replace(' ', '').isdigit():
             raise ValueError('Phone must contain only digits, +, -, or spaces')
         return v
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v):
+        if v is None:
+            return v
+        allowed = ('admin', 'citizen', 'collector')
+        if v.lower() not in allowed:
+            raise ValueError(f"Role must be one of: {', '.join(allowed)}")
+        return v.lower()
 
 
 class UserListItem(BaseModel):
@@ -92,6 +111,7 @@ class UserListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    role_counts: Optional[dict] = None
 
 
 class ProfileUpdate(BaseModel):

@@ -21,6 +21,16 @@ class CollectionStopUpdate(BaseModel):
     sequence: Optional[int] = None
     status: Optional[str] = None
     remarks: Optional[str] = None
+    delay_reason: Optional[str] = None
+    cancellation_reason: Optional[str] = None
+
+
+class StopStatusUpdate(BaseModel):
+    """Collector or Admin action on a single collection stop."""
+    status: str
+    reason: Optional[str] = None
+    reason_other: Optional[str] = None
+    additional_message: Optional[str] = None
 
 
 class CollectionStopResponse(BaseModel):
@@ -34,6 +44,13 @@ class CollectionStopResponse(BaseModel):
     collection_time: Optional[time] = None
     status: str
     remarks: Optional[str] = None
+    arriving_at: Optional[datetime] = None
+    arrived_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    delayed_at: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    delay_reason: Optional[str] = None
+    cancellation_reason: Optional[str] = None
     created_at: Optional[datetime] = None
 
 
@@ -45,6 +62,7 @@ class CollectionScheduleCreate(BaseModel):
     collection_time: Optional[time] = None  # if omitted, derived from first stop
     truck_number: Optional[str] = ""
     assigned_personnel: str = ""
+    assigned_collector_id: Optional[int] = None
     route_name: Optional[str] = None
     starting_point: Optional[str] = None
     status: str = "Upcoming"
@@ -85,6 +103,7 @@ class CollectionScheduleUpdate(BaseModel):
     collection_date: Optional[date] = None
     collection_time: Optional[time] = None
     assigned_personnel: Optional[str] = None
+    assigned_collector_id: Optional[int] = None
     status: Optional[str] = None
     remarks: Optional[str] = None
     reason: Optional[str] = None
@@ -114,6 +133,7 @@ class CollectionScheduleListItem(BaseModel):
     collection_date: date
     collection_time: time
     assigned_personnel: str
+    assigned_collector_id: Optional[int] = None
     status: str
     stops: List[CollectionStopResponse] = []
 
@@ -131,6 +151,7 @@ class CollectionScheduleResponse(BaseModel):
     collection_date: date
     collection_time: time
     assigned_personnel: str
+    assigned_collector_id: Optional[int] = None
     status: str
     remarks: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -155,12 +176,20 @@ class RouteStopInfo(BaseModel):
     sequence: int = 1
     collection_time: Optional[time] = None
     status: str = "Upcoming"
+    arriving_at: Optional[datetime] = None
+    arrived_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    delayed_at: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    delay_reason: Optional[str] = None
+    cancellation_reason: Optional[str] = None
 
 
 class RoutePreviewAssignment(BaseModel):
     id: int
     truck_number: Optional[str] = ""
     assigned_personnel: str
+    assigned_collector_id: Optional[int] = None
     route_name: Optional[str] = None
     starting_point: Optional[str] = None
     collection_date: date

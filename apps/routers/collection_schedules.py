@@ -9,6 +9,7 @@ from apps.schemas.collection_schedule import (
     CollectionScheduleResponse,
     CollectionScheduleListResponse,
     ScheduleStatusUpdate,
+    StopStatusUpdate,
     BatchScheduleCreate,
     RoutePreviewResponse,
     CollectionStopCreate,
@@ -25,6 +26,9 @@ from apps.services.collection_schedule import (
     update_collection_schedule,
     delete_collection_schedule,
     set_schedule_status,
+    update_stop_status_action,
+    get_collector_schedules,
+    get_collector_dashboard_summary,
     apply_derived_statuses,
     get_route_preview_data,
     add_stop_to_schedule,
@@ -32,7 +36,7 @@ from apps.services.collection_schedule import (
     delete_stop,
     get_stop_by_id,
 )
-from apps.utils.jwt import get_current_admin, get_current_user
+from apps.utils.jwt import get_current_admin, get_current_user, get_current_admin_or_collector
 from apps.models.user import User
 
 router = APIRouter()
@@ -131,6 +135,54 @@ def list_schedules_by_truck(
     current_user: User = Depends(get_current_user)
 ):
     return get_schedules_by_date_range(db, date(2000, 1, 1), date(2100, 12, 31), truck_number=truck_number)
+
+
+# ─── Collector-specific endpoints ────────────────────────────────────────────
+
+@router.get("/collector/dashboard")
+def collector_dashboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_or_collector)
+):
+    """Get operational summary and today/upcoming schedules for the signed-in collector."""
+    return get_collector_dashboard_summary(db, current_user)
+
+
+@router.get("/collector/my-schedules", response_model=list[CollectionScheduleResponse])
+def list_collector_schedules(
+    target_date: Optional[date] = Query(None),
+    status: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_or_collector)
+):
+    """Get all collection schedules assigned to the signed-in collector."""
+    return get_collector_schedules(db, current_user, target_date=target_date, status=status)
+
+
+@router.post("/stops/{stop_id}/status", response_model=CollectionStopResponse)
+def change_stop_status(
+    stop_id: int,
+    status_data: StopStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_or_collector)
+):
+    """Update a single stop's operational status (Arriving, Arrived, Completed, Delayed, Cancelled)."""
+    try:
+        return update_stop_status_action(
+            db,
+            stop_id=stop_id,
+            new_status=status_data.status,
+            current_user=current_user,
+            reason=status_data.reason,
+            reason_other=status_data.reason_other,
+            additional_message=status_data.additional_message,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ─── Stop sub-resource endpoints ─────────────────────────────────────────────
@@ -282,9 +334,21 @@ def change_schedule_status(
     schedule_id: int,
     status_data: ScheduleStatusUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin)
+    current_user: User = Depends(get_current_admin_or_collector)
 ):
     try:
+        existing = get_collection_schedule_by_id(db, schedule_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Collection schedule not found")
+        if (current_user.role or "").lower() == "collector":
+            assigned_id = getattr(existing, "assigned_collector_id", None)
+            assigned_name = (existing.assigned_personnel or "").strip().lower()
+            collector_name = (current_user.fullname or "").strip().lower()
+            if assigned_id and int(assigned_id) != int(current_user.id) and assigned_name != collector_name:
+                raise HTTPException(status_code=403, detail="You can only update routes assigned to you.")
+            elif not assigned_id and assigned_name and assigned_name != collector_name:
+                raise HTTPException(status_code=403, detail="You can only update routes assigned to you.")
+
         schedule = set_schedule_status(
             db,
             schedule_id,

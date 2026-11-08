@@ -190,6 +190,7 @@ def generate_route_notification(
     db.refresh(notification)
 
     _push_to_barangays(db, affected, title, message, notification)
+    _push_to_collector(db, getattr(schedule, "assigned_collector_id", None), schedule.assigned_personnel, title, message, notification)
     return notification
 
 
@@ -303,6 +304,7 @@ def generate_route_creation_notification(
     db.refresh(notification)
 
     _push_to_barangays(db, affected, title, message, notification)
+    _push_to_collector(db, getattr(schedule, "assigned_collector_id", None), schedule.assigned_personnel, title, message, notification)
     return notification
 
 
@@ -370,6 +372,7 @@ def generate_reschedule_notification(
     db.refresh(notification)
 
     _push_to_barangays(db, affected, notification_type, message, notification)
+    _push_to_collector(db, getattr(schedule, "assigned_collector_id", None), schedule.assigned_personnel, notification_type, message, notification)
     return notification
 
 def create_manual_announcement(db: Session, data: dict, current_user: User):
@@ -534,6 +537,183 @@ def _push_to_barangays(db: Session, affected: List[str], title: str,
     )
 
 
+def _push_to_collector(
+    db: Session,
+    collector_id: Optional[int],
+    collector_name: Optional[str],
+    title: str,
+    message: str,
+    notification: Notification,
+) -> int:
+    """Send FCM push notification to the assigned collector if they have registered device tokens."""
+    user = None
+    if collector_id:
+        user = db.query(User).filter(User.id == collector_id, User.is_active.is_(True)).first()
+    if not user and collector_name:
+        user = db.query(User).filter(
+            User.role == "collector",
+            User.fullname.ilike(collector_name.strip()),
+            User.is_active.is_(True),
+        ).first()
+    if not user:
+        return 0
+    tokens = [
+        t[0] for t in db.query(DeviceToken.token)
+        .filter(DeviceToken.user_id == user.id).all()
+    ]
+    if not tokens:
+        return 0
+    return send_push_notifications(
+        tokens,
+        title,
+        message,
+        {"id": str(notification.id), "type": notification.notification_type or "Route Update"},
+    )
+
+
+def generate_collector_stop_reminder(
+    db: Session,
+    schedule: CollectionSchedule,
+    stop,
+) -> Optional[Notification]:
+    """Send a 30-minute advance reminder to the assigned collector before a stop's scheduled time."""
+    route = _route_name(schedule)
+    stop_time = stop.collection_time or schedule.collection_time
+    time_str = stop_time.strftime("%I:%M %p") if stop_time else ""
+    dest = f"{stop.street}, {stop.barangay}" if stop.street else stop.barangay
+    title = f"Upcoming Stop Reminder: {stop.barangay}"
+    message = (
+        f"Reminder: Stop #{stop.sequence} ({dest}) on {route} is scheduled in 30 minutes "
+        f"({time_str}). Please prepare and mark your arrival when you reach the stop."
+    )
+    target_val = f"Collector:{schedule.assigned_collector_id}" if getattr(schedule, "assigned_collector_id", None) else (schedule.assigned_personnel or stop.barangay)
+
+    notification = Notification(
+        title=title,
+        message=message,
+        notification_type="Upcoming Collection",
+        category="Collector Reminder",
+        target=target_val,
+        schedule_id=schedule.id,
+        route_name=route,
+        starting_point=schedule.starting_point,
+        affected_barangays=json.dumps([stop.barangay], ensure_ascii=False),
+        collection_date=str(schedule.collection_date),
+        collection_time=time_str,
+        assigned_personnel=schedule.assigned_personnel,
+        priority="Important",
+        recipients=json.dumps([target_val], ensure_ascii=False),
+        status="Sent",
+        created_by_name="System Auto-Reminder",
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+
+    _push_to_collector(
+        db,
+        getattr(schedule, "assigned_collector_id", None),
+        schedule.assigned_personnel,
+        title,
+        message,
+        notification,
+    )
+    return notification
+
+
+def generate_stop_status_notification(
+    db: Session,
+    schedule: CollectionSchedule,
+    stop,
+    new_status: str,
+    reason: Optional[str] = None,
+    reason_other: Optional[str] = None,
+    additional_message: Optional[str] = None,
+    created_by: Optional[int] = None,
+    created_by_name: Optional[str] = None,
+) -> Optional[Notification]:
+    """Create and push a stop-level status notification for citizens, admin, and collector."""
+    notification_type = STATUS_TO_TYPE.get(new_status)
+    if not notification_type:
+        return None
+
+    route = _route_name(schedule)
+    stop_time = stop.collection_time or schedule.collection_time
+    time_str = stop_time.strftime("%I:%M %p") if stop_time else _time_str(schedule)
+    dest = f"{stop.street}, {stop.barangay}" if stop.street else stop.barangay
+    affected = [stop.barangay] if stop.barangay else _affected_barangays(schedule)
+
+    if reason == "Others" and reason_other:
+        effective_reason = reason_other
+    else:
+        effective_reason = reason
+
+    if new_status == "Arriving":
+        title = f"Garbage Truck Arriving — {stop.barangay}"
+        message = f"The garbage truck for {route} is now arriving at {dest} (scheduled {time_str}). Please have your waste ready."
+    elif new_status == "Arrived":
+        title = f"Garbage Truck Arrived — {stop.barangay}"
+        message = f"The garbage truck has arrived at {dest} ({route}). Please bring out your waste now."
+    elif new_status == "Completed":
+        title = f"Collection Completed — {stop.barangay}"
+        message = f"Garbage collection at {dest} ({route}) has been confirmed completed. Thank you for your cooperation!"
+    elif new_status == "Delayed":
+        title = f"Delayed Collection — {stop.barangay}"
+        message = (
+            f"Today's garbage collection at {dest} ({route}, scheduled {time_str}) is delayed."
+            + (f"\nReason: {effective_reason}" if effective_reason else "")
+            + (f"\n\n{additional_message}" if additional_message else "")
+        )
+    elif new_status == "Cancelled":
+        title = f"Cancelled Collection — {stop.barangay}"
+        message = (
+            f"Today's garbage collection at {dest} ({route}, scheduled {time_str}) has been cancelled."
+            + (f"\nReason: {effective_reason}" if effective_reason else "")
+            + (f"\n\n{additional_message}" if additional_message else "")
+        )
+    else:
+        title = f"{notification_type} — {stop.barangay}"
+        message = _default_message(notification_type, stop.barangay, route, time_str, reason, additional_message, reason_other)
+
+    notification = Notification(
+        title=title,
+        message=message,
+        notification_type=notification_type,
+        category="Route Updates",
+        target=", ".join(affected),
+        schedule_id=schedule.id,
+        route_name=route,
+        starting_point=schedule.starting_point,
+        affected_barangays=json.dumps(affected, ensure_ascii=False),
+        collection_date=str(schedule.collection_date),
+        collection_time=time_str,
+        assigned_personnel=schedule.assigned_personnel,
+        reason=effective_reason,
+        reason_other=reason_other,
+        additional_message=additional_message,
+        priority="Important" if new_status in ("Delayed", "Cancelled") else "Normal",
+        recipients=json.dumps(affected, ensure_ascii=False),
+        status="Sent",
+        created_by=created_by,
+        created_by_name=created_by_name,
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+
+    _push_to_barangays(db, affected, title, message, notification)
+    if new_status in ("Delayed", "Cancelled"):
+        _push_to_collector(
+            db,
+            getattr(schedule, "assigned_collector_id", None),
+            schedule.assigned_personnel,
+            title,
+            message,
+            notification,
+        )
+    return notification
+
+
 # ---------------------------------------------------------------------------
 # Queries (admin)
 # ---------------------------------------------------------------------------
@@ -665,11 +845,23 @@ def delete_notification(db: Session, notification_id: int):
 # ---------------------------------------------------------------------------
 
 def _user_scope(db: Session, user: User, query):
-    """Notifications a citizen should see: targeted to any of their preferred
-    barangays, or broadcast to everyone ('All').
+    """Notifications a user should see:
+    - If collector: notifications for their assigned routes, collector reminders, or 'All'.
+    - If citizen: targeted to any of their preferred barangays, or 'All' (excluding Collector Reminders).
+    """
+    role = (user.role or "citizen").lower()
+    if role == "collector":
+        clauses = [
+            Notification.target == "All",
+            Notification.target == f"Collector:{user.id}",
+        ]
+        if user.fullname:
+            clauses.append(Notification.assigned_personnel.ilike(user.fullname.strip()))
+            clauses.append(Notification.target.ilike(f"%{user.fullname.strip()}%"))
+        return query.filter(or_(*clauses))
 
-    A citizen with no saved preference (empty list) is subscribed to every
-    barangay, so they see every notification."""
+    # Citizen scope: exclude collector-only reminders
+    query = query.filter(or_(Notification.category.is_(None), Notification.category != "Collector Reminder"))
     prefs = _user_preferred_barangays(user)
     if not prefs:
         return query

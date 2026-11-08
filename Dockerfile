@@ -29,5 +29,5 @@ RUN mkdir -p uploads
 # Expose port
 EXPOSE 8000
 
-# Run FastAPI app with Uvicorn worker
-CMD ["uvicorn", "apps.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Run FastAPI app with Uvicorn worker (respects Render's dynamic $PORT)
+CMD ["sh", "-c", "uvicorn apps.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

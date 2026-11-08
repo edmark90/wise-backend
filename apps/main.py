@@ -1,6 +1,6 @@
-﻿import os
-# import threading  # Temporarily disabled to debug startup
-# import time  # Temporarily disabled to debug startup
+import os
+import threading
+import time
 
 
 from contextlib import asynccontextmanager
@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
 from apps.database import test_connection, engine, SessionLocal
-# from apps.services.collection_schedule import sync_auto_status_notifications  # Temporarily disabled to debug startup
+from apps.services.collection_schedule import sync_auto_status_notifications
 from apps.routers.auth import router as auth_router
 from apps.routers.profile import router as profile_router, UPLOAD_ROOT
 from apps.routers.users import router as users_router
@@ -158,7 +158,53 @@ def ensure_schema():
                 conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN truck_number VARCHAR(100) NULL"))
             if "starting_point" not in s_cols:
                 conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN starting_point VARCHAR(255) NULL"))
+            if "assigned_collector_id" not in s_cols:
+                conn.execute(text("ALTER TABLE collection_schedule ADD COLUMN assigned_collector_id INT NULL"))
             conn.commit()
+
+            # collection_stops table & columns
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS collection_stops (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    schedule_id INT NOT NULL,
+                    barangay VARCHAR(100) NOT NULL,
+                    street VARCHAR(255) NOT NULL DEFAULT '',
+                    sequence INT NOT NULL DEFAULT 1,
+                    collection_time TIME NULL,
+                    status VARCHAR(20) DEFAULT 'Upcoming',
+                    remarks TEXT NULL,
+                    arriving_at DATETIME NULL,
+                    arrived_at DATETIME NULL,
+                    completed_at DATETIME NULL,
+                    delayed_at DATETIME NULL,
+                    cancelled_at DATETIME NULL,
+                    delay_reason TEXT NULL,
+                    cancellation_reason TEXT NULL,
+                    reminder_sent INT DEFAULT 0,
+                    updated_by_id INT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_cs_schedule (schedule_id)
+                ) ENGINE=InnoDB
+            """))
+            conn.commit()
+            cs_cols = [row[0] for row in conn.execute(text("SHOW COLUMNS FROM collection_stops"))]
+            stop_new_cols = {
+                "arriving_at": "DATETIME NULL",
+                "arrived_at": "DATETIME NULL",
+                "completed_at": "DATETIME NULL",
+                "delayed_at": "DATETIME NULL",
+                "cancelled_at": "DATETIME NULL",
+                "delay_reason": "TEXT NULL",
+                "cancellation_reason": "TEXT NULL",
+                "reminder_sent": "INT DEFAULT 0",
+                "updated_by_id": "INT NULL",
+            }
+            for col_name, ddl in stop_new_cols.items():
+                if col_name not in cs_cols:
+                    conn.execute(text(f"ALTER TABLE collection_stops ADD COLUMN {col_name} {ddl}"))
+            conn.commit()
+            print("[schema] Ensured collection_stops collector columns")
 
             # collection_history table (completed collections, dashboard source)
             conn.execute(text("""
@@ -241,8 +287,13 @@ def start_auto_status_worker():
 
     threading.Thread(target=run, daemon=True, name="auto-status-worker").start()
 
-# Temporarily disabled to debug startup
-# start_auto_status_worker()
+
+def _AsyncStartupTasks():
+    ensure_schema()
+    start_auto_status_worker()
+
+
+threading.Thread(target=_AsyncStartupTasks, daemon=True, name="startup-schema-worker").start()
 
 # Uploads directory for profile pictures (created automatically if missing)
 os.makedirs(os.path.join(UPLOAD_ROOT, "profile"), exist_ok=True)
