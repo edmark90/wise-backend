@@ -15,6 +15,7 @@ import calendar
 import io
 import os
 from datetime import date, datetime, time, timedelta
+from xml.sax.saxutils import escape as _xml_escape
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -848,10 +849,20 @@ def _collector_pdf_report_data(db: Session, start_ph: datetime, end_ph: datetime
         # Build concise field verification remarks from stop reasons or route remarks
         stop_notes = []
         for st in stops:
+            street = (getattr(st, "street", None) or "").strip()
+            barangay = (getattr(st, "barangay", None) or "").strip()
+            if street and barangay:
+                stop_label = f"{street}, {barangay}"
+            elif street or barangay:
+                stop_label = street or barangay
+            else:
+                seq = getattr(st, "sequence", None)
+                stop_label = f"Stop #{seq}" if seq is not None else "Stop"
+
             if getattr(st, "delay_reason", None):
-                stop_notes.append(f"{st.stop_name}: Delayed ({st.delay_reason})")
+                stop_notes.append(f"{stop_label}: Delayed ({st.delay_reason})")
             elif getattr(st, "cancellation_reason", None):
-                stop_notes.append(f"{st.stop_name}: Cancelled ({st.cancellation_reason})")
+                stop_notes.append(f"{stop_label}: Cancelled ({st.cancellation_reason})")
         if stop_notes:
             field_remarks = "; ".join(stop_notes[:2])
         elif s.remarks:
@@ -1670,7 +1681,7 @@ def build_pdf(
                         cell_style = styles["TD_C"]
                     else:
                         cell_style = styles["TD_L"]
-                    cells.append(Paragraph(val_str, cell_style))
+                    cells.append(Paragraph(_xml_escape(val_str), cell_style))
                 while len(cells) < len(headers):
                     cells.append(Paragraph("—", styles["TD_C"]))
                 table_rows.append(cells)
@@ -1740,7 +1751,7 @@ def build_pdf(
                     c_style = styles["TD_C"]
                 else:
                     c_style = styles["TD_L"]
-                cells.append(Paragraph(val_str, c_style))
+                cells.append(Paragraph(_xml_escape(val_str), c_style))
             roster_table_rows.append(cells)
 
     roster_table = Table(roster_table_rows, colWidths=roster_col_widths, repeatRows=1)
@@ -1794,7 +1805,7 @@ def build_pdf(
                     c_style = styles["TD_C"]
                 else:
                     c_style = styles["TD_L"]
-                cells.append(Paragraph(val_str, c_style))
+                cells.append(Paragraph(_xml_escape(val_str), c_style))
             log_table_rows.append(cells)
 
     log_table = Table(log_table_rows, colWidths=log_col_widths, repeatRows=1)
