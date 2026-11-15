@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from apps.database import get_db
 from apps.schemas.auth import LoginRequest, SignupRequest, LoginResponse, UserResponse, RefreshTokenRequest
-from apps.services.auth import login_user, authenticate_user
+from apps.services.auth import build_login_response
 from apps.services.user import create_user, get_user_by_email
 from apps.utils.password import verify_password
-from apps.utils.jwt import get_current_admin, get_current_user, create_access_token, create_refresh_token, decode_access_token
+from apps.utils.jwt import get_current_user, create_access_token, create_refresh_token, decode_access_token
 from apps.models.user import User
 
 router = APIRouter()
@@ -33,13 +33,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
                 detail=f"Access denied. This account is registered as {actual_role.capitalize()}, not {expected_role.capitalize()}."
             )
 
-    result = login_user(db, request.email, request.password)
-    if not result:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
-        )
-    return result
+    return build_login_response(user)
 
 @router.post("/signup", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
 def signup(request: SignupRequest, db: Session = Depends(get_db)):
@@ -52,25 +46,8 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already exists"
         )
-    
-    access_token = create_access_token(
-        data={"sub": str(user.id), "email": user.email, "role": user.role}
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "fullname": user.fullname,
-            "email": user.email,
-            "phone": user.phone,
-            "barangay": user.barangay,
-            "role": user.role,
-            "profile_image": user.profile_image,
-            "created_at": user.created_at.isoformat() if user.created_at else None
-        }
-    }
+
+    return build_login_response(user)
 
 @router.post("/refresh")
 def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):

@@ -62,15 +62,8 @@ def get_user_by_email(db: Session, email: str):
 def create_user(db: Session, user_data: dict):
     """Create a new user."""
     # Check if email already exists
-    existing_user = get_user_by_email(db, user_data["email"])
-    if existing_user:
-        return None
-    
-    # Hash password
-    user_data["password_hash"] = hash_password(user_data.pop("password"))
-    
-    db_user = User(**user_data)
-    db.add(db_user)
+def _commit_with_role_column_upgrade(db: Session, retry_fn):
+    """Commit user changes, widening users.role if a legacy ENUM rejects 'collector'."""
     try:
         db.commit()
     except Exception as exc:
@@ -79,52 +72,62 @@ def create_user(db: Session, user_data: dict):
             from sqlalchemy import text
             db.execute(text("ALTER TABLE users MODIFY COLUMN role VARCHAR(30) NOT NULL DEFAULT 'citizen'"))
             db.commit()
-            db_user = User(**user_data)
-            db.add(db_user)
+            retry_fn()
             db.commit()
         else:
             raise
+
+
+def create_user(db: Session, user_data: dict):
+    """Create a new user."""
+    existing_user = get_user_by_email(db, user_data["email"])
+    if existing_user:
+        return None
+
+    user_data["password_hash"] = hash_password(user_data.pop("password"))
+
+    db_user = User(**user_data)
+    db.add(db_user)
+
+    def _retry_create():
+        nonlocal db_user
+        db_user = User(**user_data)
+        db.add(db_user)
+
+    _commit_with_role_column_upgrade(db, _retry_create)
     db.refresh(db_user)
     return db_user
+
 
 def update_user(db: Session, user_id: int, user_data: dict):
     """Update a user."""
     db_user = get_user_by_id(db, user_id)
     if not db_user:
         return None
-    
-    # If updating email, check if it's already taken
+
     if "email" in user_data and user_data["email"] != db_user.email:
         existing_user = get_user_by_email(db, user_data["email"])
         if existing_user:
             return None
-    
-    # If updating password, hash and set password_hash
-    raw_password = user_data.pop("password", None)
-    if raw_password and len(raw_password.strip()) >= 8:
-        db_user.password_hash = hash_password(raw_password.strip())
 
-    for key, value in user_data.items():
-        if value is not None:
-            setattr(db_user, key, value)
-    
-    try:
-        db.commit()
-    except Exception as exc:
-        if "role" in str(exc).lower() or "1265" in str(exc):
-            db.rollback()
-            from sqlalchemy import text
-            db.execute(text("ALTER TABLE users MODIFY COLUMN role VARCHAR(30) NOT NULL DEFAULT 'citizen'"))
-            db.commit()
-            db_user = get_user_by_id(db, user_id)
-            for key, value in user_data.items():
-                if value is not None:
-                    setattr(db_user, key, value)
-            if raw_password and len(raw_password.strip()) >= 8:
-                db_user.password_hash = hash_password(raw_password.strip())
-            db.commit()
-        else:
-            raise
+    raw_password = user_data.pop("password", None)
+    hashed_password = hash_password(raw_password.strip()) if raw_password and len(raw_password.strip()) >= 8 else None
+
+    def _apply_updates(target_user: User):
+        if hashed_password:
+            target_user.password_hash = hashed_password
+        for key, value in user_data.items():
+            if value is not None:
+                setattr(target_user, key, value)
+
+    _apply_updates(db_user)
+
+    def _retry_update():
+        nonlocal db_user
+        db_user = get_user_by_id(db, user_id)
+        _apply_updates(db_user)
+
+    _commit_with_role_column_upgrade(db, _retry_update)
     db.refresh(db_user)
     return db_user
 

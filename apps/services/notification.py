@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta
 from typing import List, Optional
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy.orm import Session
 
 from apps.models.collection_schedule import CollectionSchedule
 from apps.models.device_token import DeviceToken
@@ -19,7 +19,6 @@ MANUAL_TYPES = [
     "General Announcement",
     "Delayed Collection",
     "Cancelled Collection",
-    "Mobile Update",
 ]
 
 # Automatic notification types — generated from the Collection Schedule module.
@@ -29,14 +28,6 @@ AUTOMATIC_TYPES = [
     "Garbage Truck Arrived",
     "Collection Completed",
     "Collection Rescheduled",
-]
-
-NOTIFICATION_TYPES = MANUAL_TYPES + AUTOMATIC_TYPES
-
-# Reason options shown in the admin Delayed/Cancelled modal
-REASON_OPTIONS = [
-    "Heavy Rain", "Flood", "Truck Breakdown", "Mechanical Failure",
-    "Heavy Traffic", "Road Closure", "Holiday", "Emergency", "Others",
 ]
 
 STATUS_TO_TYPE = {
@@ -58,7 +49,6 @@ PREFERENCE_FOR_TYPE = {
     "Collection Completed": "notif_completed_collection",
     "Collection Rescheduled": "notif_collection_updates",
     "General Announcement": "notif_announcements",
-    "Mobile Update": "notif_announcements",
 }
 
 def _route_name(schedule: CollectionSchedule) -> str:
@@ -873,10 +863,8 @@ def _user_scope(db: Session, user: User, query):
 
 
 def get_my_notifications(db: Session, user: User, limit: int = 50):
-    """Notifications relevant to a citizen + read state.
-    Excludes 'Mobile Update' type — those are dialog-only."""
+    """Notifications relevant to a citizen + read state."""
     query = _user_scope(db, user, db.query(Notification))
-    query = query.filter(Notification.notification_type != "Mobile Update")
     notifications = query.order_by(Notification.created_at.desc()).limit(limit).all()
     read_ids = set(
         r[0] for r in db.query(NotificationRead.notification_id)
@@ -888,8 +876,7 @@ def get_my_notifications(db: Session, user: User, limit: int = 50):
 
 def get_unread_count(db: Session, user: User) -> int:
     notification_ids = [
-        r[0] for r in _user_scope(db, user, db.query(Notification.id))
-        .filter(Notification.notification_type != "Mobile Update").all()
+        r[0] for r in _user_scope(db, user, db.query(Notification.id)).all()
     ]
     if not notification_ids:
         return 0

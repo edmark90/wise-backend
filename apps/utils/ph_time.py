@@ -14,10 +14,8 @@ from zoneinfo import ZoneInfo
 # database is unavailable on the host (e.g. slim containers).
 try:
     PH_TZ = ZoneInfo("Asia/Manila")
-    _PH = "Asia/Manila"
 except Exception:  # pragma: no cover - fallback for hosts without tzdata
     PH_TZ = timezone(timedelta(hours=8))
-    _PH = "UTC+8"
 
 
 def ph_now() -> datetime:

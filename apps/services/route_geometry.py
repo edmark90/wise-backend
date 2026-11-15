@@ -284,13 +284,6 @@ def _latlngs_from_geojson(payload: dict) -> List[LatLng]:
         return []
 
 
-def _summary_from_geojson(payload: dict) -> Optional[dict]:
-    feature = _feature_from_geojson(payload) or {}
-    props = feature.get("properties") or {}
-    summary = props.get("summary")
-    return summary if isinstance(summary, dict) else None
-
-
 def _legs_to_geojson(legs: Optional[List[List[LatLng]]]) -> List[List[List[float]]]:
     """Convert [lat, lng] legs to GeoJSON [lng, lat] rings for the mobile client."""
     if not legs:

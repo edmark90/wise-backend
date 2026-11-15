@@ -5,12 +5,9 @@ from datetime import date, datetime, time, timedelta
 from apps.models.collection_schedule import CollectionSchedule
 from apps.models.collection_stop import CollectionStop
 from apps.models.collection_history import CollectionHistory
-from apps.models.notification import Notification
 from apps.models.user import User
 from apps.services.notification import (
-    STATUS_TO_TYPE,
     handle_status_change,
-    generate_route_notification,
     generate_route_creation_notification,
     generate_reschedule_notification,
     generate_collector_stop_reminder,
@@ -433,14 +430,12 @@ def _upsert_stops(db: Session, schedule: CollectionSchedule, stops_data: list):
     db.flush()
 
 
-def create_collection_schedule(
+def _prepare_and_create_schedule(
     db: Session,
     schedule_data: dict,
-    notify: bool = True,
-    created_by: Optional[int] = None,
-    created_by_name: Optional[str] = None,
-):
-    """Create a new collection assignment with multiple stops, each having its own time."""
+    empty_stops_msg: str,
+) -> CollectionSchedule:
+    """Shared validation, stop normalization, and persistence for single/batch schedule creation."""
     stops_data = schedule_data.pop("stops", []) or []
     if not stops_data:
         barangay = schedule_data.get("barangay") or ""
@@ -450,7 +445,7 @@ def create_collection_schedule(
             stops_data = [{"barangay": barangay, "street": zone, "collection_time": ctime, "sequence": 1}]
 
     if not stops_data:
-        raise ValueError("An assignment must have at least one collection stop.")
+        raise ValueError(empty_stops_msg)
 
     schedule_data = _resolve_collector_fields(db, schedule_data)
     schedule_data = _populate_schedule_defaults({**schedule_data, "stops": stops_data})
@@ -473,6 +468,22 @@ def create_collection_schedule(
     _upsert_stops(db, db_schedule, stops_data)
     db.commit()
     db.refresh(db_schedule)
+    return db_schedule
+
+
+def create_collection_schedule(
+    db: Session,
+    schedule_data: dict,
+    notify: bool = True,
+    created_by: Optional[int] = None,
+    created_by_name: Optional[str] = None,
+):
+    """Create a new collection assignment with multiple stops, each having its own time."""
+    db_schedule = _prepare_and_create_schedule(
+        db,
+        schedule_data,
+        "An assignment must have at least one collection stop.",
+    )
 
     if notify and db_schedule.status == "Upcoming":
         generate_route_creation_notification(
@@ -493,39 +504,14 @@ def create_collection_schedules_batch(
     """Create multiple collection assignments for a day in one call.
     Generates exactly ONE consolidated notification per newly created route.
     """
-    created = []
-    for schedule_data in schedules:
-        stops_data = schedule_data.pop("stops", []) or []
-        if not stops_data:
-            barangay = schedule_data.get("barangay") or ""
-            zone = schedule_data.get("zone") or ""
-            ctime = schedule_data.get("collection_time")
-            if barangay:
-                stops_data = [{"barangay": barangay, "street": zone, "collection_time": ctime, "sequence": 1}]
-
-        if not stops_data:
-            raise ValueError("Each assignment must have at least one collection stop.")
-
-        schedule_data = _resolve_collector_fields(db, schedule_data)
-        schedule_data = _populate_schedule_defaults({**schedule_data, "stops": stops_data})
-        schedule_data.pop("stops", None)
-        schedule_data = _normalize_status(schedule_data)
-
-        validate_schedule_conflict(
+    created = [
+        _prepare_and_create_schedule(
             db,
-            schedule_data.get("collection_date"),
-            schedule_data.get("collection_time"),
-            schedule_data.get("truck_number"),
-            schedule_data.get("assigned_personnel"),
-            assigned_collector_id=schedule_data.get("assigned_collector_id"),
+            schedule_data,
+            "Each assignment must have at least one collection stop.",
         )
-        db_schedule = CollectionSchedule(**schedule_data)
-        db.add(db_schedule)
-        db.flush()
-        _upsert_stops(db, db_schedule, stops_data)
-        db.commit()
-        db.refresh(db_schedule)
-        created.append(db_schedule)
+        for schedule_data in schedules
+    ]
 
     # Generate one notification per route (not per stop or per barangay)
     for s in created:
@@ -699,6 +685,26 @@ def set_schedule_status(
     return schedule
 
 
+def verify_collector_schedule_access(
+    schedule: CollectionSchedule,
+    current_user: User,
+    error_message: str = "You can only update routes assigned to you.",
+) -> None:
+    """Verify an acting collector is assigned to the given schedule; admins pass."""
+    user_role = (current_user.role or "").lower()
+    if user_role == "collector":
+        assigned_id = getattr(schedule, "assigned_collector_id", None)
+        assigned_name = (schedule.assigned_personnel or "").strip().lower()
+        collector_name = (current_user.fullname or "").strip().lower()
+        if assigned_id and int(assigned_id) != int(current_user.id):
+            if assigned_name != collector_name:
+                raise PermissionError(error_message)
+        elif not assigned_id and assigned_name and assigned_name != collector_name:
+            raise PermissionError(error_message)
+    elif user_role != "admin":
+        raise PermissionError("Only an assigned Collector or Administrator can update stop statuses.")
+
+
 def update_stop_status_action(
     db: Session,
     stop_id: int,
@@ -721,19 +727,11 @@ def update_stop_status_action(
     if not schedule:
         raise LookupError("Parent collection schedule not found.")
 
-    user_role = (current_user.role or "").lower()
-    if user_role == "collector":
-        # Verify the collector is assigned to this schedule
-        assigned_id = getattr(schedule, "assigned_collector_id", None)
-        assigned_name = (schedule.assigned_personnel or "").strip().lower()
-        collector_name = (current_user.fullname or "").strip().lower()
-        if assigned_id and int(assigned_id) != int(current_user.id):
-            if assigned_name != collector_name:
-                raise PermissionError("You can only update stops for routes assigned to you.")
-        elif not assigned_id and assigned_name and assigned_name != collector_name:
-            raise PermissionError("You can only update stops for routes assigned to you.")
-    elif user_role != "admin":
-        raise PermissionError("Only an assigned Collector or Administrator can update stop statuses.")
+    verify_collector_schedule_access(
+        schedule,
+        current_user,
+        "You can only update stops for routes assigned to you.",
+    )
 
     normalized = (new_status or "").strip().capitalize()
     valid_statuses = ("Upcoming", "Arriving", "Arrived", "Completed", "Delayed", "Cancelled")

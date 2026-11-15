@@ -7,7 +7,6 @@ GET /api/reports/barangay-leaderboard?year=&month=
 """
 import io
 import logging
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse

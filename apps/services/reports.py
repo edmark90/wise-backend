@@ -28,8 +28,6 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from reportlab.platypus import (
-    HRFlowable,
-    KeepTogether,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -42,7 +40,6 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from apps.models.collection_schedule import CollectionSchedule
-from apps.models.collection_stop import CollectionStop
 from apps.models.notification import Notification
 from apps.models.notification_read import NotificationRead
 from apps.models.user import User
@@ -1040,36 +1037,6 @@ def _data_for(db: Session, start_ph: datetime, end_ph: datetime, types: list[str
             data[t] = _legacy_user_rows(db, start_ph, end_ph)
     return data
 
-# Backward compatibility functions
-def waste_stats(db: Session, start: datetime, end: datetime) -> dict:
-    summary = get_report_summary_data(db, start.year, start.month if start.month == end.month else None)
-    return {
-        "total_records": summary["waste_classifications"],
-        "total_classified": summary["waste_classifications"],
-        "avg_confidence": summary["avg_confidence"],
-        "low_confidence": summary["low_confidence_count"],
-        "per_class": summary["per_class"],
-        "most_common_type": summary["most_common_type"],
-        "most_common_count": summary["most_common_count"],
-    }
-
-def schedule_stats(db: Session, start: datetime, end: datetime) -> dict:
-    summary = get_report_summary_data(db, start.year, start.month if start.month == end.month else None)
-    return {
-        "total_routes": summary["total_collections"],
-        "completed": summary["completed_collections"],
-        "cancelled": summary["cancelled_collections"],
-        "delayed": summary["delayed_collections"],
-        "upcoming": summary["upcoming_collections"],
-        "completion_rate": summary["completion_rate"],
-        "status_breakdown": {
-            "Completed": summary["completed_collections"],
-            "Delayed": summary["delayed_collections"],
-            "Cancelled": summary["cancelled_collections"],
-            "Upcoming": summary["upcoming_collections"],
-        },
-    }
-
 # ---------------------------------------------------------------------------
 # Excel Export (.xlsx) with OpenPyXL
 # ---------------------------------------------------------------------------
@@ -1136,7 +1103,6 @@ def build_excel(
     wb = Workbook()
 
     # Styling definitions
-    NAVY_FILL = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
     BLUE_FILL = PatternFill(start_color="1E40AF", end_color="1E40AF", fill_type="solid")
     SECTION_FILL = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
     ALT_FILL = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")

@@ -122,21 +122,25 @@ def register_token(
     return {"ok": True}
 
 
+def _serialize_notification_settings(user: User) -> dict:
+    return {
+        "notif_collection_updates": bool(user.notif_collection_updates),
+        "notif_route_updates": bool(user.notif_route_updates),
+        "notif_announcements": bool(user.notif_announcements),
+        "notif_emergency_alerts": bool(user.notif_emergency_alerts),
+        "notif_reminders": bool(user.notif_reminders),
+        "notif_completed_collection": bool(getattr(user, "notif_completed_collection", True)),
+        "preferred_barangays": _preferred_barangays(user),
+    }
+
+
 @router.get("/settings")
 def get_notification_settings(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """The citizen's notification preferences + preferred barangays."""
-    return {
-        "notif_collection_updates": bool(current_user.notif_collection_updates),
-        "notif_route_updates": bool(current_user.notif_route_updates),
-        "notif_announcements": bool(current_user.notif_announcements),
-        "notif_emergency_alerts": bool(current_user.notif_emergency_alerts),
-        "notif_reminders": bool(current_user.notif_reminders),
-        "notif_completed_collection": bool(getattr(current_user, "notif_completed_collection", True)),
-        "preferred_barangays": _preferred_barangays(current_user),
-    }
+    return _serialize_notification_settings(current_user)
 
 
 @router.put("/settings")
@@ -153,15 +157,7 @@ def update_notification_settings(
         setattr(current_user, key, value)
     db.commit()
     db.refresh(current_user)
-    return {
-        "notif_collection_updates": bool(current_user.notif_collection_updates),
-        "notif_route_updates": bool(current_user.notif_route_updates),
-        "notif_announcements": bool(current_user.notif_announcements),
-        "notif_emergency_alerts": bool(current_user.notif_emergency_alerts),
-        "notif_reminders": bool(current_user.notif_reminders),
-        "notif_completed_collection": bool(getattr(current_user, "notif_completed_collection", True)),
-        "preferred_barangays": _preferred_barangays(current_user),
-    }
+    return _serialize_notification_settings(current_user)
 
 
 def _preferred_barangays(user) -> list:
@@ -215,10 +211,10 @@ def create_new_notification(
         return create_manual_announcement(db, notification_data.model_dump(), current_user)
     data = notification_data.model_dump()
     data.pop("recipients", None)
-    data.pop("send_now", None)
+    send_now = data.pop("send_now", True)
     data["created_by"] = current_user.id
     data["created_by_name"] = current_user.fullname
-    data.setdefault("status", "Sent" if data.get("send_now", True) else "Draft")
+    data.setdefault("status", "Sent" if send_now else "Draft")
     return create_notification(db, data)
 
 

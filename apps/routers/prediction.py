@@ -1,7 +1,5 @@
 import os
-import shutil
 import logging
-import tempfile
 from fastapi import APIRouter, File, UploadFile, HTTPException, status, Depends
 from pydantic import BaseModel
 from typing import Dict, Optional
@@ -72,24 +70,14 @@ async def predict_waste_image(
 
     validate_image_metadata(content_type=content_type, file_size=file_size, image_bytes=contents)
 
-    # 3. Create temporary file on disk if required (guarantees automatic cleanup in finally block)
-    temp_file_path = None
     try:
-        # Create temp file in system upload scratch directory
-        temp_dir = os.path.join(os.getcwd(), "uploads")
-        os.makedirs(temp_dir, exist_ok=True)
-
-        with tempfile.NamedTemporaryFile(delete=False, dir=temp_dir, suffix=os.path.splitext(image.filename)[1]) as tmp:
-            tmp.write(contents)
-            temp_file_path = tmp.name
-
-        # 4. Preprocess image into 4D tensor (1, 224, 224, 3)
+        # 3. Preprocess image into 4D tensor (1, 224, 224, 3)
         tensor_batch = process_image_bytes(contents)
 
-        # 5. Run async thread-safe model prediction
+        # 4. Run async thread-safe model prediction
         prediction_result = await model_service.predict_async(tensor_batch)
 
-        # 6. Persist the photo + result for the admin dashboard (fail-open)
+        # 5. Persist the photo + result for the admin dashboard (fail-open)
         stored_path = None
         try:
             stored_path = save_waste_image(contents, image.filename)
@@ -117,13 +105,6 @@ async def predict_waste_image(
         return prediction_result
 
     finally:
-        # 7. Delete temporary file after prediction process finishes
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.remove(temp_file_path)
-            except Exception as cleanup_err:
-                logger.warning(f"Could not remove temp file {temp_file_path}: {cleanup_err}")
-
         await image.close()
 
 

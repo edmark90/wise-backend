@@ -27,6 +27,7 @@ from apps.services.collection_schedule import (
     delete_collection_schedule,
     set_schedule_status,
     update_stop_status_action,
+    verify_collector_schedule_access,
     get_collector_schedules,
     get_collector_dashboard_summary,
     apply_derived_statuses,
@@ -340,14 +341,7 @@ def change_schedule_status(
         existing = get_collection_schedule_by_id(db, schedule_id)
         if not existing:
             raise HTTPException(status_code=404, detail="Collection schedule not found")
-        if (current_user.role or "").lower() == "collector":
-            assigned_id = getattr(existing, "assigned_collector_id", None)
-            assigned_name = (existing.assigned_personnel or "").strip().lower()
-            collector_name = (current_user.fullname or "").strip().lower()
-            if assigned_id and int(assigned_id) != int(current_user.id) and assigned_name != collector_name:
-                raise HTTPException(status_code=403, detail="You can only update routes assigned to you.")
-            elif not assigned_id and assigned_name and assigned_name != collector_name:
-                raise HTTPException(status_code=403, detail="You can only update routes assigned to you.")
+        verify_collector_schedule_access(existing, current_user)
 
         schedule = set_schedule_status(
             db,
@@ -362,6 +356,8 @@ def change_schedule_status(
         if not schedule:
             raise HTTPException(status_code=404, detail="Collection schedule not found")
         return schedule
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

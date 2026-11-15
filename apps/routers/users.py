@@ -109,6 +109,21 @@ def get_collector_assignments(
     }
 
 
+def _serialize_user(user: User) -> dict:
+    """Serialize a User ORM instance for UserResponse."""
+    return {
+        "id": user.id,
+        "fullname": user.fullname,
+        "email": user.email,
+        "phone": user.phone,
+        "barangay": user.barangay,
+        "role": user.role,
+        "profile_image": user.profile_image,
+        "is_active": bool(user.is_active),
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
 @router.get("/{user_id}", response_model=UserResponse)
 def get_user(
     user_id: int,
@@ -122,18 +137,8 @@ def get_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
-    return {
-        "id": user.id,
-        "fullname": user.fullname,
-        "email": user.email,
-        "phone": user.phone,
-        "barangay": user.barangay,
-        "role": user.role,
-        "profile_image": user.profile_image,
-        "is_active": bool(user.is_active),
-        "created_at": user.created_at.isoformat() if user.created_at else None
-    }
+    return _serialize_user(user)
+
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def create_new_user(
@@ -148,18 +153,8 @@ def create_new_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already exists"
         )
-    
-    return {
-        "id": user.id,
-        "fullname": user.fullname,
-        "email": user.email,
-        "phone": user.phone,
-        "barangay": user.barangay,
-        "role": user.role,
-        "profile_image": user.profile_image,
-        "is_active": bool(user.is_active),
-        "created_at": user.created_at.isoformat() if user.created_at else None
-    }
+    return _serialize_user(user)
+
 
 @router.put("/{user_id}", response_model=UserResponse)
 def update_existing_user(
@@ -175,18 +170,7 @@ def update_existing_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found or email already exists"
         )
-    
-    return {
-        "id": user.id,
-        "fullname": user.fullname,
-        "email": user.email,
-        "phone": user.phone,
-        "barangay": user.barangay,
-        "role": user.role,
-        "profile_image": user.profile_image,
-        "is_active": bool(user.is_active),
-        "created_at": user.created_at.isoformat() if user.created_at else None
-    }
+    return _serialize_user(user)
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_existing_user(
