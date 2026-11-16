@@ -1,12 +1,18 @@
+import asyncio
 import os
 import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException, status, Depends
 from pydantic import BaseModel
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 
 from apps.database import get_db
-from apps.utils.image_processor import validate_image_metadata, process_image_bytes, save_waste_image
+from apps.utils.image_processor import (
+    MAX_BYTES,
+    prepare_inference_package,
+    save_waste_image,
+    validate_image_metadata,
+)
 from apps.services.model_service import model_service, class_key
 from apps.utils.jwt import get_optional_current_user
 from apps.models.user import User
@@ -25,6 +31,31 @@ class PredictionResponse(BaseModel):
     processing_time_ms: float
     record_id: Optional[int] = None
     image_url: Optional[str] = None
+    confidence_level: Optional[str] = None
+    is_low_confidence: Optional[bool] = None
+    confidence_margin: Optional[float] = None
+    warning: Optional[str] = None
+    image_quality: Optional[Dict[str, Any]] = None
+    views_evaluated: Optional[int] = None
+
+
+async def _read_bounded_upload(upload: UploadFile, max_bytes: int) -> bytes:
+    """Read an UploadFile up to max_bytes + 1 so oversized uploads fail fast without exhausting RAM."""
+    chunks: list[bytes] = []
+    total = 0
+    chunk_size = 256 * 1024
+    while True:
+        chunk = await upload.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413),
+                detail=f"File size exceeds maximum allowed size of {max_bytes // (1024 * 1024)}MB.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.post(
@@ -32,52 +63,46 @@ class PredictionResponse(BaseModel):
     response_model=PredictionResponse,
     status_code=status.HTTP_200_OK,
     summary="Classify Waste Image",
-    description="Accepts an image via multipart upload, validates format/size, preprocesses it, runs MobileNetV2 waste classification inference, then stores the photo + result into waste_records for the admin dashboard."
+    description="Accepts an image via multipart upload, validates format/size, normalizes EXIF/sRGB/alpha, runs multi-view MobileNetV2 waste classification inference, then stores the photo + result into waste_records for the admin dashboard.",
 )
 async def predict_waste_image(
     image: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """
-    Waste Image Prediction Endpoint.
-
-    - Accepts: multipart/form-data field 'image'
-    - Returns: JSON object containing predicted waste category, confidence %, probability breakdown, and execution time.
-    - Side effect (fail-open): the photo is saved to uploads/waste and a row is
-      inserted into waste_records so the admin Waste Classification page gets
-      live data. If persistence fails the prediction is still returned.
-    """
+    """Waste Image Prediction Endpoint."""
     if not image or not image.filename:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No image file provided in multipart payload."
+            detail="No image file provided in multipart payload.",
         )
 
-    # 1. Read raw image content into memory
     try:
-        contents = await image.read()
-    except Exception as e:
-        logger.error(f"Failed to read uploaded file stream: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Could not read uploaded image file stream."
+        try:
+            contents = await _read_bounded_upload(image, MAX_BYTES)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to read uploaded file stream: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not read uploaded image file stream.",
+            )
+
+        content_type = image.content_type or "application/octet-stream"
+        validate_image_metadata(
+            content_type=content_type,
+            file_size=len(contents),
+            image_bytes=contents,
         )
 
-    # 2. Validate MIME type & file size limit (sniffs bytes when MIME is generic)
-    content_type = image.content_type or "application/octet-stream"
-    file_size = len(contents)
+        # Offload Pillow decode, EXIF/ICC/alpha normalization, and ROI cropping to a worker thread
+        package = await asyncio.to_thread(prepare_inference_package, contents)
 
-    validate_image_metadata(content_type=content_type, file_size=file_size, image_bytes=contents)
+        # Run async thread-safe multi-view model prediction
+        prediction_result = await model_service.predict_pipeline_async(package)
 
-    try:
-        # 3. Preprocess image into 4D tensor (1, 224, 224, 3)
-        tensor_batch = process_image_bytes(contents)
-
-        # 4. Run async thread-safe model prediction
-        prediction_result = await model_service.predict_async(tensor_batch)
-
-        # 5. Persist the photo + result for the admin dashboard (fail-open)
+        # Persist the photo + result for the admin dashboard (fail-open)
         stored_path = None
         try:
             stored_path = save_waste_image(contents, image.filename)
@@ -88,16 +113,18 @@ async def predict_waste_image(
                 waste_type=short_class,
                 disposal_category=short_class,
                 confidence=prediction_result["confidence"],
+                is_flagged=1 if prediction_result.get("is_low_confidence") else 0,
             )
             db.add(record)
             db.commit()
             db.refresh(record)
             prediction_result["record_id"] = record.id
             prediction_result["image_url"] = stored_path
-            logger.info(f"Saved waste record #{record.id} for prediction '{short_class}' ({record.confidence}%)")
+            logger.info(
+                f"Saved waste record #{record.id} for prediction '{short_class}' ({record.confidence}%, flagged={record.is_flagged})"
+            )
         except Exception as persist_err:
             db.rollback()
-            # Don't keep orphan image files when the DB insert failed.
             if stored_path:
                 _remove_stored_file(stored_path)
             logger.warning(f"Failed to persist waste record (prediction still returned): {persist_err}")

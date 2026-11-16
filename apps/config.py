@@ -29,7 +29,17 @@ MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(BASE_DIR, "apps", "ai_model", 
 LABELS_PATH = os.getenv("LABELS_PATH", os.path.join(BASE_DIR, "apps", "ai_model", "labels.txt"))
 CLASS_MAPPING_PATH = os.getenv("CLASS_MAPPING_PATH", os.path.join(BASE_DIR, "apps", "ai_model", "class_mapping.json"))
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))
-ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
+ALLOWED_IMAGE_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/jpg",
+    "image/mpo",
+    "image/bmp",
+}
+AI_LOW_CONFIDENCE_THRESHOLD = float(os.getenv("AI_LOW_CONFIDENCE_THRESHOLD", "60.0"))
+AI_MIN_IMAGE_DIM = int(os.getenv("AI_MIN_IMAGE_DIM", "32"))
+AI_TTA_ENABLED = os.getenv("AI_TTA_ENABLED", "true").lower() in ("1", "true", "yes")
 
 # Directory where captured waste photos are stored (served at /uploads/waste/...).
 WASTE_UPLOAD_DIR = os.path.join(BASE_DIR, "uploads", "waste")
