@@ -48,12 +48,12 @@ def derive_stop_status(schedule, stop, now: Optional[datetime] = None) -> str:
     now = now or ph_now()
     stop_dt = datetime.combine(d, t)
 
+    if current_status == "Arriving":
+        return "Arriving"
+
     # 1-hour overdue without arrival confirmation -> Delayed
     if now >= stop_dt + timedelta(minutes=AUTO_DELAY_AFTER_MINUTES) and getattr(stop, "arrived_at", None) is None:
         return "Delayed"
-
-    if current_status == "Arriving":
-        return "Arriving"
 
     return "Upcoming"
 
@@ -159,9 +159,9 @@ def sync_auto_status_notifications(db: Session) -> int:
                 if generate_collector_stop_reminder(db, s, st) is not None:
                     emitted += 1
 
-            # 2) 1-Hour Automatic Delay Detection (if not confirmed Arrived or Completed)
+            # 2) 1-Hour Automatic Delay Detection (if not confirmed Arriving, Arrived, or Completed)
             if (
-                st.status in ("Upcoming", "Scheduled", "Arriving")
+                st.status in ("Upcoming", "Scheduled")
                 and getattr(st, "arrived_at", None) is None
                 and now >= stop_dt + timedelta(minutes=AUTO_DELAY_AFTER_MINUTES)
             ):
@@ -742,22 +742,42 @@ def update_stop_status_action(
         raise ValueError(f"Cannot mark a cancelled stop as {normalized}.")
 
     today = ph_today()
-    if schedule.collection_date and schedule.collection_date > today and normalized in ("Arriving", "Arrived", "Completed"):
+    is_future_date = bool(schedule.collection_date and schedule.collection_date > today)
+    if is_future_date and normalized in ("Arriving", "Arrived", "Completed"):
         raise ValueError(
             f"Cannot mark stop as {normalized} before the collection date ({schedule.collection_date}). "
             "Only Delay or Cancel is allowed before the scheduled day."
         )
 
+    now = ph_now()
+    if normalized != "Upcoming" and (not is_future_date or normalized in ("Arriving", "Arrived", "Completed")):
+        ordered_stops = sorted(
+            schedule.stops or [],
+            key=lambda st: (st.sequence if st.sequence is not None else 999999, st.id),
+        )
+        target_idx = next((i for i, st in enumerate(ordered_stops) if st.id == stop.id), -1)
+        if target_idx > 0:
+            for prev_idx, prev_st in enumerate(ordered_stops[:target_idx]):
+                prev_status = derive_stop_status(schedule, prev_st, now)
+                if prev_status not in ("Arrived", "Completed", "Cancelled"):
+                    raise ValueError(
+                        f"Complete Stop {prev_idx + 1} before updating this stop."
+                    )
+
     effective_reason = reason_other if (reason == "Others" and reason_other) else reason
     if normalized in ("Cancelled", "Delayed") and not (effective_reason or additional_message):
         raise ValueError(f"Please provide a reason when marking a stop as {normalized}.")
 
-    now = ph_now()
     stop.status = normalized
     stop.updated_by_id = current_user.id
 
     if normalized == "Arriving":
-        stop.arriving_at = stop.arriving_at or now
+        stop.arriving_at = now
+        if stop.delay_reason and (
+            stop.delay_reason.startswith("Automatic:")
+            or "arrival not confirmed within 1 hour" in stop.delay_reason.lower()
+        ):
+            stop.delay_reason = None
     elif normalized in ("Arrived", "Completed"):
         stop.arriving_at = stop.arriving_at or now
         stop.arrived_at = stop.arrived_at or now

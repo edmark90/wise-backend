@@ -106,6 +106,27 @@ def _extract_osrm_legs(route: dict) -> List[List[List[float]]]:
     return legs
 
 
+def _extract_osrm_leg_roads(route: dict) -> List[List[str]]:
+    """Extract ordered, deduplicated road/street names per leg from OSRM steps."""
+    leg_roads: List[List[str]] = []
+    for leg in route.get("legs", []):
+        roads: List[str] = []
+        for step in leg.get("steps", []):
+            raw_name = (step.get("name") or "").strip()
+            raw_ref = (step.get("ref") or "").strip()
+            label = (
+                raw_name
+                if raw_name and raw_name.lower() not in ("unnamed", "unnamed road")
+                else raw_ref
+            )
+            if not label or label.lower() in ("unnamed", "unnamed road"):
+                continue
+            if not roads or roads[-1].lower() != label.lower():
+                roads.append(label)
+        leg_roads.append(roads)
+    return leg_roads
+
+
 def save_geometry(
     db: Optional[Session],
     key: str,
@@ -209,6 +230,7 @@ def fetch_osrm_geojson(
     geom = route.get("geometry", {})
     coords = geom.get("coordinates", [])  # OSRM: [lng, lat]
     legs_coords = _extract_osrm_legs(route)
+    leg_roads = _extract_osrm_leg_roads(route)
 
     # Convert to ORS-compatible GeoJSON FeatureCollection so clients need no change.
     geojson = {
@@ -225,6 +247,7 @@ def fetch_osrm_geojson(
                     "duration": route.get("duration"),
                 },
                 "legs": legs_coords if legs_coords else None,
+                "leg_roads": leg_roads,
             }
         }]
     }
@@ -452,6 +475,7 @@ def build_schedule_route(db: Session, schedule, apply_statuses=None) -> dict:
         "stops": stops,
         "geometry": None,
         "legs": None,
+        "leg_roads": [],
         "is_segmented": False,
         "distance_meters": None,
         "duration_seconds": None,
@@ -471,10 +495,18 @@ def build_schedule_route(db: Session, schedule, apply_statuses=None) -> dict:
 
     if cached is not None:
         try:
-            payload["geometry"] = (_feature_from_geojson(json.loads(cached.ors_response)) or {}).get(
-                "geometry"
-            )
+            cached_feature = _feature_from_geojson(json.loads(cached.ors_response)) or {}
+            cached_props = cached_feature.get("properties") or {}
+            payload["geometry"] = cached_feature.get("geometry")
             payload["legs"] = json.loads(cached.legs) if cached.legs else None
+            raw_leg_roads = cached_props.get("leg_roads")
+            if isinstance(raw_leg_roads, list):
+                payload["leg_roads"] = [
+                    [str(r) for r in leg if isinstance(r, str) and r.strip()]
+                    if isinstance(leg, list)
+                    else []
+                    for leg in raw_leg_roads
+                ]
             payload["distance_meters"] = cached.distance_meters
             payload["duration_seconds"] = cached.duration_seconds
         except (TypeError, ValueError):
@@ -533,6 +565,14 @@ def build_schedule_route(db: Session, schedule, apply_statuses=None) -> dict:
 
         payload["geometry"] = feature.get("geometry")
         payload["legs"] = _legs_to_geojson(legs) if legs else None
+        raw_leg_roads = props.get("leg_roads")
+        if isinstance(raw_leg_roads, list):
+            payload["leg_roads"] = [
+                [str(r) for r in leg if isinstance(r, str) and r.strip()]
+                if isinstance(leg, list)
+                else []
+                for leg in raw_leg_roads
+            ]
         summary = props.get("summary") or {}
         payload["distance_meters"] = _int_or_none(summary.get("distance"))
         payload["duration_seconds"] = _int_or_none(summary.get("duration"))

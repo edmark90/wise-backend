@@ -44,6 +44,7 @@ class ScheduleRouteResponse(BaseModel):
     stops: List[RouteStopPosition] = []
     geometry: Optional[LineStringGeometry] = None
     legs: Optional[List[List[List[float]]]] = None
+    leg_roads: List[List[str]] = []
     is_segmented: bool = False
     distance_meters: Optional[int] = None
     duration_seconds: Optional[int] = None
