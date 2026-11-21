@@ -2,11 +2,8 @@
 multi-view tensor preprocessing for MobileNetV2 waste classification.
 """
 import io
-import os
-import time
 import logging
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import uuid4
 
 import numpy as np
 from fastapi import HTTPException, status
@@ -18,6 +15,7 @@ from apps.config import (
     MAX_UPLOAD_SIZE_MB,
     WASTE_UPLOAD_DIR,
 )
+from apps.services.storage_service import upload_image
 
 logger = logging.getLogger("waste_classifier.image_processor")
 
@@ -126,7 +124,7 @@ def validate_image_metadata(content_type: str, file_size: int, image_bytes: byte
 
 
 def save_waste_image(image_bytes: bytes, original_filename: str) -> str:
-    """Persist a captured waste photo to disk under WASTE_UPLOAD_DIR.
+    """Persist a captured waste photo to Cloudinary (or local WASTE_UPLOAD_DIR fallback).
 
     Uses the sniffed image format when available so uploads with generic
     filenames keep an accurate image extension.
@@ -138,14 +136,13 @@ def save_waste_image(image_bytes: bytes, original_filename: str) -> str:
         raw_ext = (original_filename or "").split(".")[-1].lower()
         ext = ext_map.get(raw_ext, "jpg")
 
-    os.makedirs(WASTE_UPLOAD_DIR, exist_ok=True)
-    filename = f"waste_{int(time.time())}_{uuid4().hex[:8]}.{ext}"
-    dest = os.path.join(WASTE_UPLOAD_DIR, filename)
-
-    with open(dest, "wb") as f:
-        f.write(image_bytes)
-
-    return f"uploads/waste/{filename}"
+    return upload_image(
+        image_bytes=image_bytes,
+        category="waste",
+        public_id_prefix="waste",
+        ext=ext,
+        local_dir=WASTE_UPLOAD_DIR,
+    )
 
 
 def _convert_icc_to_srgb(img: Image.Image) -> Image.Image:

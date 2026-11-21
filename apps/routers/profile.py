@@ -3,17 +3,21 @@
 Routed under /api/users/profile. Registered BEFORE the admin users router
 so the static /profile paths are not shadowed by /users/{user_id}.
 """
+import asyncio
+import logging
 import os
-import time
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
 from apps.database import get_db
+from apps.services.storage_service import delete_stored_image, upload_image
 from apps.utils.jwt import get_current_user
 from apps.utils.password import verify_password, hash_password
 from apps.models.user import User
 from apps.schemas.user import ProfileUpdate, ChangePasswordRequest
+
+logger = logging.getLogger("wise.profile")
 
 router = APIRouter()
 
@@ -23,10 +27,6 @@ PROFILE_UPLOAD_DIR = os.path.join(UPLOAD_ROOT, "profile")
 
 ALLOWED_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5 MB
-
-
-def _ensure_profile_dir():
-    os.makedirs(PROFILE_UPLOAD_DIR, exist_ok=True)
 
 
 def _validate_image(content: bytes) -> str:
@@ -46,18 +46,8 @@ def _validate_image(content: bytes) -> str:
 
 
 def _delete_old_image(stored_path):
-    """Delete a previously stored profile image, safely contained in uploads/profile."""
-    if not stored_path:
-        return
-    full = os.path.normpath(os.path.join(BACKEND_ROOT, stored_path))
-    expected_dir = os.path.normpath(PROFILE_UPLOAD_DIR)
-    if os.path.commonpath([full, expected_dir]) != expected_dir:
-        return
-    if os.path.isfile(full):
-        try:
-            os.remove(full)
-        except OSError:
-            pass
+    """Delete a previously stored profile image (Cloudinary URL or local uploads/profile)."""
+    delete_stored_image(stored_path)
 
 
 def _serialize_user(user: User):
@@ -106,21 +96,31 @@ async def upload_profile_photo(
     """Upload a new profile picture. Replaces (and deletes) the old one."""
     content = await file.read()
     ext = _validate_image(content)
-    _ensure_profile_dir()
 
-    filename = f"user_{current_user.id}_{int(time.time())}.{ext}"
-    stored_path = f"uploads/profile/{filename}"
-    full_path = os.path.join(BACKEND_ROOT, stored_path)
-
-    with open(full_path, "wb") as f:
-        f.write(content)
+    try:
+        stored_path = await asyncio.to_thread(
+            upload_image,
+            content,
+            "profile",
+            f"user_{current_user.id}",
+            ext,
+            PROFILE_UPLOAD_DIR,
+        )
+    except Exception as exc:
+        logger.error("Failed to upload profile picture for user #%s: %s", current_user.id, exc)
+        raise HTTPException(status_code=502, detail="Failed to store profile image. Please try again.")
 
     old = current_user.profile_image
-    current_user.profile_image = stored_path
-    db.commit()
+    try:
+        current_user.profile_image = stored_path
+        db.commit()
+    except Exception:
+        db.rollback()
+        await asyncio.to_thread(_delete_old_image, stored_path)
+        raise
 
     if old and old != stored_path:
-        _delete_old_image(old)
+        await asyncio.to_thread(_delete_old_image, old)
 
     return {
         "message": "Profile picture uploaded successfully",

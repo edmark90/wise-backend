@@ -4,6 +4,7 @@ from typing import Optional
 from datetime import datetime, timedelta
 from apps.models.waste_record import WasteRecord
 from apps.models.user import User
+from apps.services.storage_service import delete_stored_image
 from apps.utils.ph_time import ph_now
 
 
@@ -120,13 +121,16 @@ def update_waste_record(db: Session, record_id: int, record_data: dict):
     return db_record
 
 def delete_waste_record(db: Session, record_id: int):
-    """Delete a waste record."""
+    """Delete a waste record and best-effort remove its stored image."""
     db_record = get_waste_record_by_id(db, record_id)
     if not db_record:
         return None
-    
+
+    old_image = db_record.image_url
     db.delete(db_record)
     db.commit()
+    if old_image:
+        delete_stored_image(old_image)
     return db_record
 
 

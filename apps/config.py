@@ -41,5 +41,19 @@ AI_LOW_CONFIDENCE_THRESHOLD = float(os.getenv("AI_LOW_CONFIDENCE_THRESHOLD", "60
 AI_MIN_IMAGE_DIM = int(os.getenv("AI_MIN_IMAGE_DIM", "32"))
 AI_TTA_ENABLED = os.getenv("AI_TTA_ENABLED", "true").lower() in ("1", "true", "yes")
 
-# Directory where captured waste photos are stored (served at /uploads/waste/...).
+# Directory where captured waste photos are stored in local fallback mode (served at /uploads/waste/...).
 WASTE_UPLOAD_DIR = os.path.join(BASE_DIR, "uploads", "waste")
+
+# Cloud image storage (Cloudinary) — used automatically when credentials are configured
+# so uploaded waste captures and profile pictures survive ephemeral container restarts.
+CLOUDINARY_URL = (os.getenv("CLOUDINARY_URL") or "").strip()
+CLOUDINARY_CLOUD_NAME = (os.getenv("CLOUDINARY_CLOUD_NAME") or "").strip()
+CLOUDINARY_API_KEY = (os.getenv("CLOUDINARY_API_KEY") or "").strip()
+CLOUDINARY_API_SECRET = (os.getenv("CLOUDINARY_API_SECRET") or "").strip()
+CLOUDINARY_FOLDER_PREFIX = (os.getenv("CLOUDINARY_FOLDER_PREFIX") or "wise").strip().strip("/")
+CLOUDINARY_UPLOAD_TIMEOUT = int(os.getenv("CLOUDINARY_UPLOAD_TIMEOUT", "15"))
+
+CLOUDINARY_ENABLED = bool(
+    CLOUDINARY_URL
+    or (CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET)
+)

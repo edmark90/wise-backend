@@ -1,5 +1,4 @@
 import asyncio
-import os
 import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException, status, Depends
 from pydantic import BaseModel
@@ -14,6 +13,7 @@ from apps.utils.image_processor import (
     validate_image_metadata,
 )
 from apps.services.model_service import model_service, class_key
+from apps.services.storage_service import delete_stored_image
 from apps.utils.jwt import get_optional_current_user
 from apps.models.user import User
 from apps.models.waste_record import WasteRecord
@@ -105,7 +105,7 @@ async def predict_waste_image(
         # Persist the photo + result for the admin dashboard (fail-open)
         stored_path = None
         try:
-            stored_path = save_waste_image(contents, image.filename)
+            stored_path = await asyncio.to_thread(save_waste_image, contents, image.filename)
             short_class = class_key(prediction_result["prediction"])
             record = WasteRecord(
                 user_id=current_user.id if current_user else None,
@@ -126,7 +126,7 @@ async def predict_waste_image(
         except Exception as persist_err:
             db.rollback()
             if stored_path:
-                _remove_stored_file(stored_path)
+                await asyncio.to_thread(_remove_stored_file, stored_path)
             logger.warning(f"Failed to persist waste record (prediction still returned): {persist_err}")
 
         return prediction_result
@@ -137,9 +137,4 @@ async def predict_waste_image(
 
 def _remove_stored_file(stored_path: str) -> None:
     """Best-effort removal of a waste image when its DB insert failed."""
-    try:
-        full = os.path.normpath(os.path.join(os.getcwd(), stored_path))
-        if os.path.isfile(full):
-            os.remove(full)
-    except OSError:
-        pass
+    delete_stored_image(stored_path)
