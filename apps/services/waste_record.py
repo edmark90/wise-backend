@@ -2,13 +2,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from typing import Optional
 from datetime import datetime, timedelta
+from apps.config import AI_LOW_CONFIDENCE_THRESHOLD
 from apps.models.waste_record import WasteRecord
 from apps.models.user import User
 from apps.services.storage_service import delete_stored_image
 from apps.utils.ph_time import ph_now
 
 
-def _apply_waste_record_filters(query, search, waste_type, disposal_category, user_id, start_date, end_date):
+def _apply_waste_record_filters(query, search, waste_type, disposal_category, user_id, start_date, end_date, is_flagged=None):
     """Reusable filter logic shared by count and data queries."""
     if search:
         query = query.filter(
@@ -25,6 +26,10 @@ def _apply_waste_record_filters(query, search, waste_type, disposal_category, us
         query = query.filter(WasteRecord.disposal_category == disposal_category)
     if user_id:
         query = query.filter(WasteRecord.user_id == user_id)
+    if is_flagged is True:
+        query = query.filter(WasteRecord.is_flagged == 1)
+    elif is_flagged is False:
+        query = query.filter(WasteRecord.is_flagged == 0)
     if start_date:
         query = query.filter(WasteRecord.classified_at >= start_date)
     if end_date:
@@ -41,7 +46,8 @@ def get_waste_records(
     disposal_category: Optional[str] = None,
     user_id: Optional[int] = None,
     start_date: Optional[str] = None,
-    end_date: Optional[str] = None
+    end_date: Optional[str] = None,
+    is_flagged: Optional[bool] = None,
 ):
     """Get waste records with filtering, search, and pagination.
     Joins with users table to include fullname.
@@ -52,7 +58,7 @@ def get_waste_records(
     if search:
         count_query = count_query.join(User, WasteRecord.user_id == User.id)
     count_query = _apply_waste_record_filters(
-        count_query, search, waste_type, disposal_category, user_id, start_date, end_date
+        count_query, search, waste_type, disposal_category, user_id, start_date, end_date, is_flagged
     )
     total = count_query.scalar() or 0
 
@@ -69,9 +75,9 @@ def get_waste_records(
         User.fullname,
         User.barangay,
         User.zone,
-    ).join(User, WasteRecord.user_id == User.id)
+    ).join(User, WasteRecord.user_id == User.id, isouter=True)
     data_query = _apply_waste_record_filters(
-        data_query, search, waste_type, disposal_category, user_id, start_date, end_date
+        data_query, search, waste_type, disposal_category, user_id, start_date, end_date, is_flagged
     )
     rows = data_query.order_by(WasteRecord.classified_at.desc()).offset(skip).limit(limit).all()
 
@@ -203,6 +209,30 @@ def get_waste_classification_stats(db: Session):
     if total_records > 0 and most_common_type:
         most_common_share_pct = round(most_common_count / total_records * 100, 1)
 
+    flagged_records = (
+        db.query(func.count(WasteRecord.id))
+        .filter(WasteRecord.is_flagged == 1)
+        .scalar()
+        or 0
+    )
+    verified_records = max(total_records - flagged_records, 0)
+    flagged_rate_pct = (
+        round(flagged_records / total_records * 100, 1)
+        if total_records > 0
+        else 0.0
+    )
+    low_confidence_flagged = (
+        db.query(func.count(WasteRecord.id))
+        .filter(
+            WasteRecord.is_flagged == 1,
+            WasteRecord.confidence.isnot(None),
+            WasteRecord.confidence < AI_LOW_CONFIDENCE_THRESHOLD,
+        )
+        .scalar()
+        or 0
+    )
+    manual_flagged = max(flagged_records - low_confidence_flagged, 0)
+
     return {
         "total_records": total_records,
         "records_last_24h": records_last_24h,
@@ -217,4 +247,10 @@ def get_waste_classification_stats(db: Session):
         "most_common_count": most_common_count,
         "most_common_share_pct": most_common_share_pct,
         "per_class": per_class,
+        "flagged_records": flagged_records,
+        "verified_records": verified_records,
+        "flagged_rate_pct": flagged_rate_pct,
+        "low_confidence_flagged": low_confidence_flagged,
+        "manual_flagged": manual_flagged,
+        "low_confidence_threshold": float(AI_LOW_CONFIDENCE_THRESHOLD),
     }

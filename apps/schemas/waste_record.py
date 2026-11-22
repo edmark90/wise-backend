@@ -73,3 +73,9 @@ class WasteClassificationStats(BaseModel):
     most_common_count: int = 0
     most_common_share_pct: float = 0.0
     per_class: dict[str, int] = {}
+    flagged_records: int = 0
+    verified_records: int = 0
+    flagged_rate_pct: float = 0.0
+    low_confidence_flagged: int = 0
+    manual_flagged: int = 0
+    low_confidence_threshold: float = 60.0

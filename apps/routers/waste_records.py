@@ -34,12 +34,13 @@ def list_waste_records(
     user_id: Optional[int] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    is_flagged: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin)
 ):
     """Get all waste records with filtering, search, and pagination.
     Returns only essential fields (id, fullname, waste_type, classification, created_at).
-    Filters: waste_type, disposal_category (Biodegradable/Non-Biodegradable/Recyclable/Hazardous).
+    Filters: waste_type, disposal_category (Biodegradable/Non-Biodegradable/Recyclable/Hazardous), is_flagged.
     """
     skip = (page - 1) * page_size
     result = get_waste_records(
@@ -51,7 +52,8 @@ def list_waste_records(
         disposal_category=disposal_category,
         user_id=user_id,
         start_date=start_date,
-        end_date=end_date
+        end_date=end_date,
+        is_flagged=is_flagged,
     )
     
     return {

@@ -24,6 +24,7 @@ from apps.services.reports import (
     build_pdf,
     get_barangay_recycling_leaderboard,
     get_report_summary_data,
+    get_section_narratives,
     period_label,
     resolve_period,
 )
@@ -96,6 +97,11 @@ def report_summary(
         "upcoming_collections": summary["upcoming_collections"],
         "completion_rate": summary["completion_rate"],
         "waste_classifications": summary["waste_classifications"],
+        "verified_count": summary["verified_count"],
+        "flagged_count": summary["flagged_count"],
+        "flagged_rate": summary["flagged_rate"],
+        "low_confidence_flagged_count": summary["low_confidence_flagged_count"],
+        "manual_flagged_count": summary["manual_flagged_count"],
         "recycling_rate": summary["recycling_rate"],
         "recyclable_count": summary["recyclable_count"],
         "avg_confidence": summary["avg_confidence"],
@@ -136,11 +142,17 @@ def report_preview(
     rows = data.get(type, [])
     headers = EXCEL_HEADERS.get(type, [])
     label = TYPE_LABELS.get(type, type.replace("_", " ").title())
+    period_str = period_label(year, month)
+    summary = get_report_summary_data(db, year, month)
+    narrative = get_section_narratives(type, period_str, summary, rows)
 
     return {
         "type": type,
         "title": label,
-        "period": period_label(year, month),
+        "period": period_str,
+        "description": narrative["about"],
+        "insight": narrative["insight"],
+        "legend": narrative["legend"],
         "headers": headers,
         "rows": rows,
         "total_records": len(rows),
