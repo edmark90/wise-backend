@@ -34,9 +34,11 @@ _ORIENTATION_RETRY_THRESHOLD = 0.72
 CLASS_KEY_MAP = {
     "Biodegradable Waste": "Biodegradable",
     "Electronic Waste (E-Waste)": "Electronic",
+    "Electronic Waste": "Electronic",
     "Hazardous Waste": "Hazardous",
     "Recyclable Waste": "Recyclable",
     "Residual (Non-Recyclable) Waste": "Residual",
+    "Residual (Non-Recyclable)": "Residual",
 }
 
 
@@ -88,8 +90,10 @@ class WasteClassifierService:
                 self._output_details = self._model.get_output_details()
 
                 # Warmup inference to initialize the interpreter / XNNPACK delegate
-                dummy_input = np.zeros(
-                    self._input_details[0]["shape"], dtype=self._input_details[0]["dtype"]
+                input_dtype = self._input_details[0]["dtype"]
+                fill_val = 127.5 if np.issubdtype(input_dtype, np.floating) else 128
+                dummy_input = np.full(
+                    self._input_details[0]["shape"], fill_val, dtype=input_dtype
                 )
                 self._model.set_tensor(self._input_details[0]["index"], dummy_input)
                 self._model.invoke()
@@ -133,11 +137,31 @@ class WasteClassifierService:
 
     def _run_single_tensor_locked(self, tensor_batch: np.ndarray) -> np.ndarray:
         """Run single-tensor inference (caller must hold self._inference_lock) and return probability vector."""
-        self._model.set_tensor(self._input_details[0]["index"], tensor_batch)
-        self._model.invoke()
-        raw = self._model.get_tensor(self._output_details[0]["index"])[0]
+        input_detail = self._input_details[0]
+        expected_dtype = input_detail["dtype"]
+        feed = tensor_batch
+        if feed.dtype != expected_dtype:
+            scale, zero_point = input_detail.get("quantization", (0.0, 0))
+            if scale and np.issubdtype(expected_dtype, np.integer):
+                feed = np.round(feed / scale + zero_point).astype(expected_dtype)
+            else:
+                feed = feed.astype(expected_dtype)
 
-        if not np.isclose(np.sum(raw), 1.0, atol=1e-2):
+        self._model.set_tensor(input_detail["index"], feed)
+        self._model.invoke()
+
+        output_detail = self._output_details[0]
+        raw = self._model.get_tensor(output_detail["index"])[0]
+        if np.issubdtype(raw.dtype, np.integer):
+            out_scale, out_zp = output_detail.get("quantization", (0.0, 0))
+            if out_scale:
+                raw = (raw.astype(np.float64) - out_zp) * out_scale
+            else:
+                raw = raw.astype(np.float64)
+        else:
+            raw = raw.astype(np.float64)
+
+        if np.any(raw < 0.0) or not np.isclose(np.sum(raw), 1.0, atol=1e-2):
             exp_preds = np.exp(raw - np.max(raw))
             probs = exp_preds / np.sum(exp_preds)
         else:
@@ -233,19 +257,25 @@ class WasteClassifierService:
 
         with self._inference_lock:
             for _name, tensor, weight in views:
-                view_probs.append(self._run_single_tensor_locked(tensor))
-                view_weights.append(float(weight))
+                probs = self._run_single_tensor_locked(tensor)
+                view_probs.append(probs)
+                # Mild confidence weighting keeps decisive views dominant and dampens off-target crops
+                view_weights.append(float(weight) * (0.5 + 0.5 * float(np.max(probs))))
 
             w_arr = np.array(view_weights, dtype=np.float64)
             w_arr /= w_arr.sum()
             base_probs = (np.array(view_probs) * w_arr[:, None]).sum(axis=0)
+            base_max = float(np.max(base_probs))
 
             fallback_rot_views = package.get("fallback_rot_views") or []
-            if AI_TTA_ENABLED and fallback_rot_views and float(np.max(base_probs)) < _ORIENTATION_RETRY_THRESHOLD:
+            if AI_TTA_ENABLED and fallback_rot_views and base_max < _ORIENTATION_RETRY_THRESHOLD:
                 for _name, rot_tensor in fallback_rot_views:
                     p_rot = self._run_single_tensor_locked(rot_tensor)
-                    view_probs.append(p_rot)
-                    view_weights.append(0.22 * float(np.max(p_rot)))
+                    rot_max = float(np.max(p_rot))
+                    if rot_max > base_max:
+                        view_probs.append(p_rot)
+                        boost = 0.45 if rot_max >= base_max + 0.12 else 0.22
+                        view_weights.append(boost * rot_max)
 
         w_final = np.array(view_weights, dtype=np.float64)
         w_final /= w_final.sum()
@@ -295,8 +325,9 @@ class WasteClassifierService:
         return {
             "status": "loaded" if self._is_loaded else "unloaded",
             "model_file": os.path.basename(MODEL_PATH),
-            "backbone": "MobileNetV2",
+            "backbone": "EfficientNetB0",
             "input_shape": input_shape,
+            "input_range": "[0, 255]",
             "num_classes": len(self._labels),
             "classes": self._labels,
             "framework": "TensorFlow Lite (TFLite)",

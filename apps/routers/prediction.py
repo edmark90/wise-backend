@@ -63,7 +63,7 @@ async def _read_bounded_upload(upload: UploadFile, max_bytes: int) -> bytes:
     response_model=PredictionResponse,
     status_code=status.HTTP_200_OK,
     summary="Classify Waste Image",
-    description="Accepts an image via multipart upload, validates format/size, normalizes EXIF/sRGB/alpha, runs multi-view MobileNetV2 waste classification inference, then stores the photo + result into waste_records for the admin dashboard.",
+    description="Accepts an image via multipart upload, validates format/size, normalizes EXIF/sRGB/alpha, runs multi-view EfficientNetB0 waste classification inference, then stores the photo + result into waste_records for the admin dashboard.",
 )
 async def predict_waste_image(
     image: UploadFile = File(...),

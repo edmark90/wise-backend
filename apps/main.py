@@ -39,7 +39,7 @@ from apps.middleware.error_handler import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Load the MobileNetV2 model ONLY ONCE
+    # Startup: Load the EfficientNetB0 TFLite model ONLY ONCE
     try:
         model_service.load_model()
         print("[Lifespan] Model loaded on startup")

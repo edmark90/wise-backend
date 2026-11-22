@@ -1,5 +1,5 @@
 """Image validation, orientation/color normalization, quality analysis, and
-multi-view tensor preprocessing for MobileNetV2 waste classification.
+multi-view tensor preprocessing for EfficientNetB0 waste classification.
 """
 import io
 import logging
@@ -276,12 +276,16 @@ def _assess_image_quality(rgb: Image.Image, meta: Dict[str, Any]) -> Dict[str, A
     }
 
 
-def _to_mobilenet_tensor(img: Image.Image) -> np.ndarray:
-    """Convert an RGB Pillow image to a (1, 224, 224, 3) MobileNetV2 tensor in [-1, 1]."""
-    resized = img if img.size == TARGET_SIZE else img.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
+def _to_model_tensor(img: Image.Image) -> np.ndarray:
+    """Convert an RGB Pillow image to a (1, 224, 224, 3) float32 tensor in [0, 255] for EfficientNetB0.
+
+    EfficientNetB0 embeds Rescaling(1/255) and ImageNet Normalization inside the exported
+    TFLite graph, so raw [0.0, 255.0] float32 RGB pixels match Keras training exactly.
+    BILINEAR resampling matches tf.image.resize(..., method='bilinear') used in training.
+    """
+    resized = img if img.size == TARGET_SIZE else img.resize(TARGET_SIZE, Image.Resampling.BILINEAR)
     arr = np.asarray(resized, dtype=np.float32)
-    preprocessed = (arr / 127.5) - 1.0
-    return np.ascontiguousarray(np.expand_dims(preprocessed, axis=0), dtype=np.float32)
+    return np.ascontiguousarray(np.expand_dims(arr, axis=0), dtype=np.float32)
 
 
 def _center_square_crop(img: Image.Image, frac: float = 1.0) -> Image.Image:
@@ -299,7 +303,7 @@ def _border_mean_pad(img: Image.Image) -> Image.Image:
     arr = np.asarray(thumb, dtype=np.float32)
     rim = np.concatenate([arr[0, :], arr[-1, :], arr[:, 0], arr[:, -1]], axis=0)
     fill_rgb = tuple(int(np.clip(round(v), 0, 255)) for v in rim.mean(axis=0))
-    return ImageOps.pad(img, TARGET_SIZE, method=Image.Resampling.LANCZOS, color=fill_rgb)
+    return ImageOps.pad(img, TARGET_SIZE, method=Image.Resampling.BILINEAR, color=fill_rgb)
 
 
 def _foreground_roi_crop(img: Image.Image, min_frac: float = 0.48) -> Image.Image:
@@ -364,11 +368,11 @@ def _foreground_roi_crop(img: Image.Image, min_frac: float = 0.48) -> Image.Imag
 
 
 def process_image_bytes(image_bytes: bytes) -> np.ndarray:
-    """Decode and preprocess raw image bytes into a single (1, 224, 224, 3) MobileNetV2 tensor."""
+    """Decode and preprocess raw image bytes into a single (1, 224, 224, 3) EfficientNetB0 tensor in [0, 255]."""
     rgb, _ = _decode_upright_rgb(image_bytes)
     if max(rgb.size) > _WORKING_MAX_DIM:
         rgb.thumbnail((_WORKING_MAX_DIM, _WORKING_MAX_DIM), Image.Resampling.BILINEAR)
-    return _to_mobilenet_tensor(rgb)
+    return _to_model_tensor(rgb)
 
 
 def prepare_inference_package(image_bytes: bytes) -> Dict[str, Any]:
@@ -389,13 +393,13 @@ def prepare_inference_package(image_bytes: bytes) -> Dict[str, Any]:
     roi_sq = _foreground_roi_crop(rgb, min_frac=0.48)
 
     views: List[Tuple[str, np.ndarray, float]] = [
-        ("full", _to_mobilenet_tensor(rgb), 0.32),
-        ("center_square", _to_mobilenet_tensor(center_sq), 0.38),
-        ("foreground_roi", _to_mobilenet_tensor(roi_sq), 0.30),
+        ("full", _to_model_tensor(rgb), 0.40),
+        ("center_square", _to_model_tensor(center_sq), 0.35),
+        ("foreground_roi", _to_model_tensor(roi_sq), 0.25),
     ]
 
     if aspect > 1.15:
-        views.append(("border_pad", _to_mobilenet_tensor(_border_mean_pad(rgb)), 0.16))
+        views.append(("border_pad", _to_model_tensor(_border_mean_pad(rgb)), 0.18))
 
     # Apply exposure rescue only when genuinely underexposed (not a flash subject on dark background) or low contrast
     center_luma = float(np.asarray(center_sq.resize((64, 64), Image.Resampling.BILINEAR).convert("L")).mean())
@@ -408,11 +412,11 @@ def prepare_inference_package(image_bytes: bytes) -> Dict[str, Any]:
         if center_luma < 65.0 and quality["p95_luma"] < 190.0:
             rescued = rescued.point(_GAMMA_RESCUE_LUT)
         rescued = ImageOps.autocontrast(rescued, cutoff=1)
-        views.append(("exposure_rescue", _to_mobilenet_tensor(rescued), 0.28))
+        views.append(("exposure_rescue", _to_model_tensor(rescued), 0.26))
 
     fallback_rot_views: List[Tuple[str, np.ndarray]] = [
-        ("rot90", _to_mobilenet_tensor(center_sq.rotate(90))),
-        ("rot270", _to_mobilenet_tensor(center_sq.rotate(270))),
+        ("rot90", _to_model_tensor(center_sq.rotate(90))),
+        ("rot270", _to_model_tensor(center_sq.rotate(270))),
     ]
 
     return {
