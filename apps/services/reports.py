@@ -116,15 +116,6 @@ TYPE_SHEET_NAMES = {
 
 LOW_CONFIDENCE_THRESHOLD = float(AI_LOW_CONFIDENCE_THRESHOLD)
 
-FLAGGED_AUDIT_HEADERS = [
-    "Date & Time (PST)",
-    "Citizen / Barangay",
-    "Predicted Type",
-    "Confidence",
-    "Flag Reason",
-    "Review Status",
-]
-
 FLAGGED_EXPLANATION_TEXT = (
     f"What 'Flagged' Means: A waste classification record is marked as Flagged (is_flagged = 1) when either: "
     f"(1) Auto-Flagged Low Confidence (< {LOW_CONFIDENCE_THRESHOLD:.0f}%) — the AI prediction confidence fell below "
@@ -1093,87 +1084,100 @@ def _data_for(db: Session, start_ph: datetime, end_ph: datetime, types: list[str
     return data
 
 
-def _flagged_waste_audit_rows(db: Session, start_ph: datetime, end_ph: datetime) -> list[list]:
-    """Return flagged waste classification records for the period with explicit flag reasons."""
-    start_utc, end_utc = ph_to_utc_range(start_ph, end_ph)
-    records = (
-        db.query(
-            WasteRecord.classified_at,
-            User.fullname,
-            User.barangay,
-            WasteRecord.waste_type,
-            WasteRecord.confidence,
-        )
-        .join(User, WasteRecord.user_id == User.id, isouter=True)
-        .filter(
-            WasteRecord.classified_at >= start_utc,
-            WasteRecord.classified_at <= end_utc,
-            WasteRecord.is_flagged == 1,
-        )
-        .order_by(WasteRecord.classified_at.desc())
-        .all()
-    )
-
-    audit_rows = []
-    for r in records:
-        dt_str = (r.classified_at + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M") if r.classified_at else "—"
-        citizen_name = (r.fullname or "Citizen Scanner").strip()
-        brgy = normalize_barangay(r.barangay) or (r.barangay or "Unassigned")
-        conf_val = float(r.confidence) if r.confidence is not None else None
-        conf_str = f"{conf_val:.1f}%" if conf_val is not None else "—"
-        if conf_val is not None and conf_val < LOW_CONFIDENCE_THRESHOLD:
-            reason = f"Low AI Confidence (< {LOW_CONFIDENCE_THRESHOLD:.0f}%)"
-        else:
-            reason = "Manual Admin Flag"
-        audit_rows.append([
-            dt_str,
-            f"{citizen_name} ({brgy})",
-            r.waste_type or "—",
-            conf_str,
-            reason,
-            "Flagged for Review",
-        ])
-    return audit_rows
+_OP_REPORT_TYPES = {
+    "barangay_performance",
+    "collection_calendar",
+    "schedule",
+    "route_efficiency",
+    "comparative_performance",
+    "peak_analysis",
+}
+_WASTE_REPORT_TYPES = {"waste_trends", "environmental_impact", "waste"}
+_NOTIF_REPORT_TYPES = {"notification_analytics", "notification_effectiveness"}
 
 
-def get_executive_narrative(summary: dict) -> str:
-    """Build a concise English narrative brief summarizing all core KPIs for the period."""
-    period = summary["period"]
-    total_routes = summary["total_collections"]
-    comp_routes = summary["completed_collections"]
-    dly_routes = summary["delayed_collections"]
-    canc_routes = summary["cancelled_collections"]
-    comp_rate = summary["completion_rate"]
-    scans = summary["waste_classifications"]
-    verified = summary.get("verified_count", scans)
+def _overall_waste_flag_summary_text(summary: dict) -> str:
+    """Build a crisp overall summary line of classified, verified, and flagged items."""
+    total_scans = summary.get("waste_classifications", 0)
+    verified = summary.get("verified_count", 0)
     flagged = summary.get("flagged_count", 0)
     flagged_rate = summary.get("flagged_rate", 0.0)
-    recyc_rate = summary["recycling_rate"]
-    avg_conf = f"{summary['avg_confidence']:.1f}%" if summary["avg_confidence"] is not None else "N/A"
+    low_flg = summary.get("low_confidence_flagged_count", 0)
+    man_flg = summary.get("manual_flagged_count", 0)
+    return (
+        f"Overall Classification Breakdown: {total_scans:,} total classified · "
+        f"{verified:,} verified · {flagged:,} flagged ({flagged_rate:.1f}% of total; "
+        f"{low_flg:,} auto-flagged <{LOW_CONFIDENCE_THRESHOLD:.0f}% confidence, {man_flg:,} manual admin flags)."
+    )
+
+
+def get_executive_narrative(
+    summary: dict,
+    types: list[str] | None = None,
+    data: dict[str, list[list]] | None = None,
+) -> str:
+    """Build a concise English narrative brief covering ONLY the selected report types."""
+    period = summary["period"]
+    selected = set(types or REPORT_TYPES)
+    include_ops = bool(selected & _OP_REPORT_TYPES)
+    include_waste = bool(selected & _WASTE_REPORT_TYPES)
+    include_notif = bool(selected & _NOTIF_REPORT_TYPES)
+    include_brgy = "barangay_performance" in selected
+
+    parts: list[str] = []
+
+    if include_ops:
+        total_routes = summary["total_collections"]
+        comp_routes = summary["completed_collections"]
+        dly_routes = summary["delayed_collections"]
+        canc_routes = summary["cancelled_collections"]
+        comp_rate = summary["completion_rate"]
+        if total_routes > 0:
+            parts.append(
+                f"During {period}, {total_routes:,} collection route(s) were scheduled with a "
+                f"{comp_rate:.1f}% completion rate ({comp_routes:,} completed, {dly_routes:,} delayed, "
+                f"{canc_routes:,} cancelled)."
+            )
+        else:
+            parts.append(f"No collection routes were scheduled during {period}.")
+
+    if include_waste:
+        scans = summary["waste_classifications"]
+        verified = summary.get("verified_count", scans)
+        flagged = summary.get("flagged_count", 0)
+        flagged_rate = summary.get("flagged_rate", 0.0)
+        recyc_rate = summary["recycling_rate"]
+        avg_conf = f"{summary['avg_confidence']:.1f}%" if summary["avg_confidence"] is not None else "N/A"
+        if scans > 0:
+            parts.append(
+                f"Citizens logged {scans:,} AI waste classification(s) at {avg_conf} average confidence "
+                f"and {recyc_rate:.1f}% recyclable share; {verified:,} passed verification while {flagged:,} "
+                f"({flagged_rate:.1f}%) were flagged for review."
+            )
+        else:
+            parts.append(f"No citizen AI waste classifications were recorded during {period}.")
+
+    if include_notif:
+        notif_rows = (data or {}).get("notification_analytics") or (data or {}).get("notification_effectiveness") or []
+        if notif_rows:
+            sent = sum(int(r[1] or 0) for r in notif_rows)
+            reads = sum(int(r[2] or 0) for r in notif_rows)
+            b_read = sum(int(r[3] or 0) for r in notif_rows)
+            eng = round(b_read / sent * 100, 1) if sent > 0 else 0.0
+            parts.append(
+                f"{sent:,} notification broadcast(s) generated {reads:,} citizen read(s) "
+                f"({eng:.1f}% broadcast engagement)."
+            )
+        else:
+            parts.append(f"No notification broadcasts were sent during {period}.")
+
     top_brgy = summary.get("top_barangay") or "—"
+    if include_brgy and summary.get("total_collections", 0) > 0 and top_brgy != "—":
+        parts.append(f"Top-performing barangay: {top_brgy}.")
 
-    if total_routes == 0 and scans == 0:
-        return (
-            f"No collection schedules or AI waste scans were recorded for {period}. "
-            "Verify scheduled routes or citizen scanning activity to populate metrics."
-        )
-
-    route_sentence = (
-        f"During {period}, {total_routes:,} collection route(s) were scheduled with a "
-        f"{comp_rate:.1f}% completion rate ({comp_routes:,} completed, {dly_routes:,} delayed, "
-        f"{canc_routes:,} cancelled)."
-        if total_routes > 0
-        else f"No collection routes were scheduled in {period}."
-    )
-    scan_sentence = (
-        f" Citizens recorded {scans:,} AI waste classification(s) at {avg_conf} average confidence "
-        f"and {recyc_rate:.1f}% recyclable share; {verified:,} passed verification while {flagged:,} "
-        f"({flagged_rate:.1f}%) were flagged for review."
-        if scans > 0
-        else " No citizen AI waste scans were recorded in this period."
-    )
-    brgy_sentence = f" Top-performing barangay: {top_brgy}." if top_brgy != "—" else ""
-    return f"{route_sentence}{scan_sentence}{brgy_sentence}"
+    if not parts:
+        return f"Administrative report overview for {period} covering the selected module(s)."
+    return " ".join(parts)
 
 
 def get_section_narratives(
@@ -1183,7 +1187,7 @@ def get_section_narratives(
     rows: list[list],
     collector_pdf: dict | None = None,
 ) -> dict[str, str]:
-    """Return English 'about', 'insight', and optional 'legend' strings for each report section."""
+    """Return English 'about', 'insight', and optional 'legend' strings matching the exact report."""
     canonical = {
         "environmental_impact": "waste_trends",
         "notification_effectiveness": "notification_analytics",
@@ -1194,29 +1198,29 @@ def get_section_narratives(
 
     if canonical == "barangay_performance":
         about = (
-            "Evaluates municipal waste collection reliability and citizen AI scanning activity across Muntinlupa's "
-            "barangays. Compares scheduled vs. completed, delayed, and cancelled routes alongside waste scan volume "
-            "and average AI model confidence per barangay."
+            "Evaluates waste collection reliability and citizen AI scanning activity across Muntinlupa's "
+            "barangays, comparing scheduled, completed, delayed, and cancelled routes with waste scan volume and AI accuracy."
         )
         active = [r for r in rows if (r[1] or 0) > 0 or (r[6] or 0) > 0]
         tot_routes = sum(int(r[1] or 0) for r in rows)
         tot_comp = sum(int(r[2] or 0) for r in rows)
         tot_scans = sum(int(r[6] or 0) for r in rows)
         rate = round(tot_comp / tot_routes * 100, 1) if tot_routes > 0 else 0.0
-        insight = (
-            f"{len(active)} barangay(s) recorded route dispatches or waste scans in {label}, totaling "
-            f"{tot_routes:,} route(s) ({rate:.1f}% completed) and {tot_scans:,} waste scan(s). "
-            f"Top service barangay: {summary.get('top_barangay') or '—'}."
-            if active
-            else f"No barangay route dispatches or AI waste scans were recorded for {label}."
-        )
+        top_brgy = summary.get("top_barangay") or "—"
+        if active:
+            top_note = f" Top service barangay: {top_brgy}." if tot_routes > 0 and top_brgy != "—" else ""
+            insight = (
+                f"{len(active)} barangay(s) recorded route dispatches or waste scans in {label}, totaling "
+                f"{tot_routes:,} route(s) ({rate:.1f}% completed) and {tot_scans:,} waste scan(s).{top_note}"
+            )
+        else:
+            insight = f"No barangay route dispatches or AI waste scans were recorded for {label}."
         return {"about": about, "insight": insight, "legend": ""}
 
     if canonical == "waste_trends":
         about = (
-            "Summarizes all waste items classified by the MobileNetV2 AI scanner, grouped by waste type and disposal "
-            "category. Tracks submission counts, share of total volume (%), average confidence (%), and flagged items "
-            "requiring administrator review."
+            "Summarizes all AI waste classifications by material type and disposal category, showing total "
+            "submissions, volume share (%), average confidence (%), and overall flagged items requiring review."
         )
         total_scans = summary.get("waste_classifications", 0)
         verified = summary.get("verified_count", 0)
@@ -1230,9 +1234,9 @@ def get_section_narratives(
             verified_pct = round(verified / total_scans * 100, 1)
             insight = (
                 f"Out of {total_scans:,} AI waste classification(s) in {label}, {verified:,} ({verified_pct:.1f}%) "
-                f"were verified normally and {flagged:,} ({flagged_rate:.1f}%) were flagged for review "
+                f"passed verification and {flagged:,} ({flagged_rate:.1f}%) were flagged "
                 f"({low_flg:,} auto-flagged below {LOW_CONFIDENCE_THRESHOLD:.0f}% confidence; {man_flg:,} manually flagged). "
-                f"Most common waste type: {top_type} ({top_cnt:,} scans)."
+                f"Most common type: {top_type} ({top_cnt:,} scans)."
             )
         else:
             insight = f"No AI waste classification scans were recorded for {label}."
@@ -1257,9 +1261,8 @@ def get_section_narratives(
 
     if canonical == "notification_analytics":
         about = (
-            "Measures municipal broadcast reach and citizen engagement across notification categories (Route Updates, "
-            "Announcements, Reminders, Emergency Alerts). Engagement % reflects the share of sent broadcasts opened "
-            "by at least one citizen."
+            "Measures municipal broadcast reach and citizen engagement across notification categories. "
+            "Engagement % reflects the share of sent broadcasts opened by at least one citizen."
         )
         if rows:
             sent = sum(int(r[1] or 0) for r in rows)
@@ -1294,9 +1297,8 @@ def get_section_narratives(
 
     if canonical == "collector_operations":
         about = (
-            "Documents field collector accountability and route execution. Table 6A summarizes each collector's "
-            "assigned workload, stop confirmations, and current status; Table 6B logs stop-by-stop arrival verification "
-            "and delay or cancellation reasons."
+            "Documents field collector accountability and route execution. The roster table summarizes each collector's "
+            "assigned workload, stop confirmations, and status; the confirmation log tracks stop-by-stop field arrivals."
         )
         roster_rows = (collector_pdf or {}).get("roster_rows", [])
         log_rows = (collector_pdf or {}).get("route_log_rows", [])
@@ -1419,41 +1421,37 @@ def build_excel(
     summary = get_report_summary_data(db, year, month)
     data = _data_for(db, start_ph, end_ph, types)
     label = summary["period"]
-    needs_flagged_audit = any(t in ("waste_trends", "environmental_impact") for t in types)
-    flagged_rows = _flagged_waste_audit_rows(db, start_ph, end_ph) if needs_flagged_audit else []
+    selected_set = set(types)
+    include_ops = bool(selected_set & _OP_REPORT_TYPES)
+    include_waste = bool(selected_set & _WASTE_REPORT_TYPES)
+    include_notifs = bool(selected_set & _NOTIF_REPORT_TYPES)
+    include_brgy = "barangay_performance" in selected_set
 
     wb = Workbook()
 
-    # Styling definitions
+    # Styling definitions (calm, clean executive palette)
     NAVY_FILL = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
     BLUE_FILL = PatternFill(start_color="1E40AF", end_color="1E40AF", fill_type="solid")
-    SUB_BANNER_FILL = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
-    CALLOUT_BLUE_FILL = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
-    CALLOUT_AMBER_FILL = PatternFill(start_color="FFFBEB", end_color="FFFBEB", fill_type="solid")
-    SECTION_FILL = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+    SUB_BANNER_FILL = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+    CALLOUT_FILL = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
     ALT_FILL = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
     TOTAL_FILL = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
-    AUDIT_HDR_FILL = PatternFill(start_color="92400E", end_color="92400E", fill_type="solid")
 
     BANNER_FONT = Font(bold=True, size=13, color="FFFFFF", name="Calibri")
-    SUB_BANNER_FONT = Font(bold=True, size=10.5, color="1E3A8A", name="Calibri")
+    SUB_BANNER_FONT = Font(bold=True, size=10.5, color="1E293B", name="Calibri")
     TITLE_FONT = Font(bold=True, size=15, color="0F172A", name="Calibri")
-    SUBTITLE_FONT = Font(bold=True, size=11, color="2563EB", name="Calibri")
-    SECTION_FONT = Font(bold=True, size=11, color="1E3A8A", name="Calibri")
+    SUBTITLE_FONT = Font(bold=True, size=10.5, color="334155", name="Calibri")
     HEADER_FONT = Font(bold=True, size=10.5, color="FFFFFF", name="Calibri")
     BODY_FONT = Font(size=10, color="0F172A", name="Calibri")
     BODY_BOLD = Font(bold=True, size=10, color="0F172A", name="Calibri")
-    CALLOUT_FONT = Font(size=10, color="1E293B", name="Calibri")
-    AMBER_FONT = Font(size=9.5, color="78350F", name="Calibri")
+    CALLOUT_FONT = Font(size=10, color="334155", name="Calibri")
     MUTED_FONT = Font(italic=True, size=9.5, color="64748B", name="Calibri")
 
     THIN_SIDE = Side(style="thin", color="CBD5E1")
-    BLUE_ACCENT_SIDE = Side(style="thick", color="1E40AF")
-    AMBER_ACCENT_SIDE = Side(style="thick", color="D97706")
+    BLUE_ACCENT_SIDE = Side(style="medium", color="1E40AF")
+    SLATE_ACCENT_SIDE = Side(style="medium", color="64748B")
     DOUBLE_BOTTOM_SIDE = Side(style="double", color="1E40AF")
     DATA_BORDER = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
-    CALLOUT_BLUE_BORDER = Border(left=BLUE_ACCENT_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
-    CALLOUT_AMBER_BORDER = Border(left=AMBER_ACCENT_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
     TOTAL_BORDER = Border(top=Side(style="medium", color="1E40AF"), bottom=DOUBLE_BOTTOM_SIDE, left=THIN_SIDE, right=THIN_SIDE)
 
     ALIGN_LEFT_WRAP = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -1461,7 +1459,7 @@ def build_excel(
     ALIGN_CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     # -----------------------------------------------------------------------
-    # Sheet 1: Executive Summary
+    # Sheet 1: Executive Summary (scoped strictly to selected report types)
     # -----------------------------------------------------------------------
     ws_sum = wb.active
     ws_sum.title = "Executive Summary"
@@ -1481,21 +1479,22 @@ def build_excel(
     c.font = TITLE_FONT
     c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
 
+    included_labels = ", ".join(TYPE_SHEET_NAMES.get(t, t) for t in types if t in EXCEL_HEADERS)
     ws_sum.merge_cells("A3:C3")
     ws_sum.row_dimensions[3].height = 20
-    c = ws_sum.cell(row=3, column=1, value=f"Reporting Period: {label} · Executive Overview & Key Performance Indicators")
+    c = ws_sum.cell(row=3, column=1, value=f"Reporting Period: {label} · Included Sections: {included_labels}")
     c.font = SUBTITLE_FONT
     c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
 
-    exec_brief = f"Executive Summary Brief: {get_executive_narrative(summary)}"
+    exec_brief = f"Executive Summary: {get_executive_narrative(summary, types, data)}"
     ws_sum.merge_cells("A5:C5")
-    ws_sum.row_dimensions[5].height = _calc_wrapped_height(exec_brief, chars_per_line=105, min_h=34.0)
+    ws_sum.row_dimensions[5].height = _calc_wrapped_height(exec_brief, chars_per_line=105, min_h=32.0)
     brief_cell = ws_sum.cell(row=5, column=1, value=exec_brief)
     brief_cell.font = CALLOUT_FONT
     brief_cell.alignment = ALIGN_LEFT_WRAP
     for col_i in range(1, 4):
         cell_b = ws_sum.cell(row=5, column=col_i)
-        cell_b.fill = CALLOUT_BLUE_FILL
+        cell_b.fill = CALLOUT_FILL
         cell_b.border = Border(
             left=BLUE_ACCENT_SIDE if col_i == 1 else None,
             right=THIN_SIDE if col_i == 3 else None,
@@ -1504,9 +1503,10 @@ def build_excel(
         )
 
     curr_row = 7
-    summary_sections = [
-        (
-            "Overall Collection Route Performance",
+    summary_sections = []
+    if include_ops:
+        summary_sections.append((
+            "Collection Route Performance",
             [
                 ("Total Routes Scheduled", summary["total_collections"], "#,##0", "Total scheduled waste collection trips during the period."),
                 ("Routes Completed Successfully", summary["completed_collections"], "#,##0", "Trips confirmed completed across assigned barangay stops."),
@@ -1515,13 +1515,14 @@ def build_excel(
                 ("Routes Upcoming / Pending", summary["upcoming_collections"], "#,##0", "Scheduled trips awaiting future dispatch dates."),
                 ("Overall Fleet Completion Rate", summary["completion_rate"] / 100.0, "0.0%", "Share of total scheduled routes completed successfully."),
             ],
-        ),
-        (
+        ))
+    if include_waste:
+        summary_sections.append((
             "Waste Classification & Flagged Quality Metrics",
             [
                 ("Total AI Waste Classifications", summary["waste_classifications"], "#,##0", "Total waste photos scanned and categorized by the AI model."),
-                ("Verified Scans (Passed Quality Check)", summary["verified_count"], "#,##0", "Scans meeting confidence threshold (>=60%) without flags."),
-                ("Flagged Classifications (Needs Review)", summary["flagged_count"], "#,##0", "Total scans marked is_flagged=1 (low confidence or admin flag)."),
+                ("Verified Scans (Passed Quality Check)", summary["verified_count"], "#,##0", f"Scans meeting confidence threshold (>={LOW_CONFIDENCE_THRESHOLD:.0f}%) without flags."),
+                ("Flagged Classifications (Needs Review)", summary["flagged_count"], "#,##0", "Total scans marked is_flagged=1 (low confidence or manual flag)."),
                 (f"  - Auto-Flagged (<{LOW_CONFIDENCE_THRESHOLD:.0f}% AI Confidence)", summary["low_confidence_flagged_count"], "#,##0", "Flagged automatically due to low model confidence (<60%)."),
                 ("  - Manually Flagged by Admin", summary["manual_flagged_count"], "#,##0", "Flagged manually by an admin for visual audit or retraining."),
                 ("Flagged Classification Rate", summary["flagged_rate"] / 100.0, "0.0%", "Percentage of total AI scans requiring review."),
@@ -1530,8 +1531,9 @@ def build_excel(
                 ("Average AI Confidence Accuracy", (summary["avg_confidence"] / 100.0 if summary["avg_confidence"] is not None else None), "0.0%", "Mean confidence score across all classified waste photos."),
                 ("Most Predominant Waste Type", summary["most_common_type"] or "—", None, "Highest-volume waste material classified in the period."),
             ],
-        ),
-        (
+        ))
+    if include_brgy:
+        summary_sections.append((
             "Barangay Operational Overview",
             [
                 ("Top Performing Service Barangay", summary["top_barangay"], None, "Barangay with highest route completion rate and volume."),
@@ -1539,8 +1541,22 @@ def build_excel(
                 ("Average Barangay Completion Rate", summary["efficiency_score"] / 100.0, "0.0%", "Mean completion efficiency across active barangays."),
                 ("New Citizen Registrations in Period", summary["new_users"], "#,##0", "New mobile/web user accounts created during this period."),
             ],
-        ),
-    ]
+        ))
+    if include_notifs:
+        notif_rows = data.get("notification_analytics") or data.get("notification_effectiveness") or []
+        n_sent = sum(int(r[1] or 0) for r in notif_rows)
+        n_reads = sum(int(r[2] or 0) for r in notif_rows)
+        n_bread = sum(int(r[3] or 0) for r in notif_rows)
+        n_eng = (n_bread / n_sent) if n_sent > 0 else 0.0
+        summary_sections.append((
+            "Notification Analytics Overview",
+            [
+                ("Total Municipal Broadcasts Sent", n_sent, "#,##0", "Total announcements and alerts dispatched in the period."),
+                ("Total Citizen Reads", n_reads, "#,##0", "Cumulative citizen read receipts recorded."),
+                ("Unique Broadcasts Read", n_bread, "#,##0", "Broadcasts opened by at least one citizen."),
+                ("Overall Broadcast Engagement Rate", n_eng, "0.0%", "Share of sent broadcasts opened by citizens."),
+            ],
+        ))
 
     for sec_title, items in summary_sections:
         ws_sum.row_dimensions[curr_row].height = 24
@@ -1572,22 +1588,22 @@ def build_excel(
             curr_row += 1
         curr_row += 1
 
-    # Flagged explanation callout on Executive Summary
-    ws_sum.merge_cells(start_row=curr_row, start_column=1, end_row=curr_row, end_column=3)
-    ws_sum.row_dimensions[curr_row].height = _calc_wrapped_height(FLAGGED_EXPLANATION_TEXT, chars_per_line=105, min_h=34.0)
-    flg_note = ws_sum.cell(row=curr_row, column=1, value=FLAGGED_EXPLANATION_TEXT)
-    flg_note.font = AMBER_FONT
-    flg_note.alignment = ALIGN_LEFT_WRAP
-    for col_i in range(1, 4):
-        cb = ws_sum.cell(row=curr_row, column=col_i)
-        cb.fill = CALLOUT_AMBER_FILL
-        cb.border = Border(
-            left=AMBER_ACCENT_SIDE if col_i == 1 else None,
-            right=THIN_SIDE if col_i == 3 else None,
-            top=THIN_SIDE,
-            bottom=THIN_SIDE,
-        )
-    curr_row += 2
+    if include_waste:
+        ws_sum.merge_cells(start_row=curr_row, start_column=1, end_row=curr_row, end_column=3)
+        ws_sum.row_dimensions[curr_row].height = _calc_wrapped_height(FLAGGED_EXPLANATION_TEXT, chars_per_line=105, min_h=32.0)
+        flg_note = ws_sum.cell(row=curr_row, column=1, value=FLAGGED_EXPLANATION_TEXT)
+        flg_note.font = CALLOUT_FONT
+        flg_note.alignment = ALIGN_LEFT_WRAP
+        for col_i in range(1, 4):
+            cb = ws_sum.cell(row=curr_row, column=col_i)
+            cb.fill = CALLOUT_FILL
+            cb.border = Border(
+                left=SLATE_ACCENT_SIDE if col_i == 1 else None,
+                right=THIN_SIDE if col_i == 3 else None,
+                top=THIN_SIDE,
+                bottom=THIN_SIDE,
+            )
+        curr_row += 2
 
     gen_cell = ws_sum.cell(
         row=curr_row,
@@ -1641,13 +1657,13 @@ def build_excel(
         # Row 3: About This Report
         about_txt = f"About This Report: {narrative['about']}"
         ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=num_cols)
-        ws.row_dimensions[3].height = _calc_wrapped_height(about_txt, chars_per_line=max(80, num_cols * 15), min_h=28.0)
+        ws.row_dimensions[3].height = _calc_wrapped_height(about_txt, chars_per_line=max(80, num_cols * 15), min_h=26.0)
         b3 = ws.cell(row=3, column=1, value=about_txt)
         b3.font = CALLOUT_FONT
         b3.alignment = ALIGN_LEFT_WRAP
         for col_i in range(1, num_cols + 1):
             c_box = ws.cell(row=3, column=col_i)
-            c_box.fill = CALLOUT_BLUE_FILL
+            c_box.fill = CALLOUT_FILL
             c_box.border = Border(
                 left=BLUE_ACCENT_SIDE if col_i == 1 else None,
                 right=THIN_SIDE if col_i == num_cols else None,
@@ -1664,9 +1680,9 @@ def build_excel(
         b4.alignment = ALIGN_LEFT_WRAP
         for col_i in range(1, num_cols + 1):
             c_box = ws.cell(row=4, column=col_i)
-            c_box.fill = ALT_FILL
+            c_box.fill = CALLOUT_FILL
             c_box.border = Border(
-                left=BLUE_ACCENT_SIDE if col_i == 1 else None,
+                left=SLATE_ACCENT_SIDE if col_i == 1 else None,
                 right=THIN_SIDE if col_i == num_cols else None,
                 top=THIN_SIDE,
                 bottom=THIN_SIDE,
@@ -1785,86 +1801,40 @@ def build_excel(
                 _style_total_cell(tot_row, 5, f"=IFERROR(D{tot_row}/B{tot_row},0)", "0.0%")
                 _style_total_cell(tot_row, 6, "—", align=ALIGN_CENTER)
 
-        # Waste Classification extra block: Flagged Meaning + Audit Log
+        # Waste Classification overall Flagged summary & explanation (no redundant audit table)
         if t in ("waste_trends", "environmental_impact"):
-            note_row = (tot_row + 2) if type_rows else (first_data_row + 2)
-            ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=num_cols)
-            ws.row_dimensions[note_row].height = _calc_wrapped_height(FLAGGED_EXPLANATION_TEXT, chars_per_line=105, min_h=38.0)
-            fn_cell = ws.cell(row=note_row, column=1, value=FLAGGED_EXPLANATION_TEXT)
-            fn_cell.font = AMBER_FONT
-            fn_cell.alignment = ALIGN_LEFT_WRAP
+            ov_row = (tot_row + 2) if type_rows else (first_data_row + 2)
+            ov_text = _overall_waste_flag_summary_text(summary)
+            ws.merge_cells(start_row=ov_row, start_column=1, end_row=ov_row, end_column=num_cols)
+            ws.row_dimensions[ov_row].height = _calc_wrapped_height(ov_text, chars_per_line=105, min_h=26.0)
+            ov_cell = ws.cell(row=ov_row, column=1, value=ov_text)
+            ov_cell.font = BODY_BOLD
+            ov_cell.alignment = ALIGN_LEFT_WRAP
             for col_i in range(1, num_cols + 1):
-                cb = ws.cell(row=note_row, column=col_i)
-                cb.fill = CALLOUT_AMBER_FILL
+                cb = ws.cell(row=ov_row, column=col_i)
+                cb.fill = CALLOUT_FILL
                 cb.border = Border(
-                    left=AMBER_ACCENT_SIDE if col_i == 1 else None,
+                    left=BLUE_ACCENT_SIDE if col_i == 1 else None,
                     right=THIN_SIDE if col_i == num_cols else None,
                     top=THIN_SIDE,
                     bottom=THIN_SIDE,
                 )
 
-            audit_title_row = note_row + 2
-            ws.merge_cells(start_row=audit_title_row, start_column=1, end_row=audit_title_row, end_column=num_cols)
-            ws.row_dimensions[audit_title_row].height = 22
-            at_cell = ws.cell(
-                row=audit_title_row,
-                column=1,
-                value=f"Flagged Classifications Audit Log ({len(flagged_rows)} record(s) requiring review)",
-            )
-            at_cell.font = SECTION_FONT
-            at_cell.fill = SECTION_FILL
-            at_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-
-            audit_hdr_row = audit_title_row + 1
-            ws.row_dimensions[audit_hdr_row].height = 24
-            for col_idx, ah in enumerate(FLAGGED_AUDIT_HEADERS, start=1):
-                ac = ws.cell(row=audit_hdr_row, column=col_idx, value=ah)
-                ac.font = HEADER_FONT
-                ac.fill = AUDIT_HDR_FILL
-                ac.border = DATA_BORDER
-                ac.alignment = ALIGN_CENTER
-
-            if not flagged_rows:
-                ar = audit_hdr_row + 1
-                ws.merge_cells(start_row=ar, start_column=1, end_row=ar, end_column=num_cols)
-                ws.row_dimensions[ar].height = 22
-                empty_a = ws.cell(
-                    row=ar,
-                    column=1,
-                    value="Zero flagged classifications recorded in this period. All AI scans met quality checks.",
+            note_row = ov_row + 1
+            ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=num_cols)
+            ws.row_dimensions[note_row].height = _calc_wrapped_height(FLAGGED_EXPLANATION_TEXT, chars_per_line=105, min_h=34.0)
+            fn_cell = ws.cell(row=note_row, column=1, value=FLAGGED_EXPLANATION_TEXT)
+            fn_cell.font = CALLOUT_FONT
+            fn_cell.alignment = ALIGN_LEFT_WRAP
+            for col_i in range(1, num_cols + 1):
+                cb = ws.cell(row=note_row, column=col_i)
+                cb.fill = CALLOUT_FILL
+                cb.border = Border(
+                    left=SLATE_ACCENT_SIDE if col_i == 1 else None,
+                    right=THIN_SIDE if col_i == num_cols else None,
+                    top=THIN_SIDE,
+                    bottom=THIN_SIDE,
                 )
-                empty_a.font = Font(italic=True, size=9.5, color="047857", name="Calibri")
-                empty_a.alignment = ALIGN_CENTER
-                for col_i in range(1, num_cols + 1):
-                    ws.cell(row=ar, column=col_i).border = DATA_BORDER
-            else:
-                for a_idx, a_row in enumerate(flagged_rows):
-                    ar = audit_hdr_row + 1 + a_idx
-                    ws.row_dimensions[ar].height = 21
-                    for col_idx, val in enumerate(a_row, start=1):
-                        ac = ws.cell(row=ar, column=col_idx)
-                        ac.border = DATA_BORDER
-                        ac.font = BODY_FONT
-                        if a_idx % 2 == 1:
-                            ac.fill = ALT_FILL
-                        if isinstance(val, str) and val.endswith("%"):
-                            try:
-                                ac.value = float(val.replace("%", "").strip()) / 100.0
-                                ac.alignment = ALIGN_RIGHT
-                                ac.number_format = "0.0%"
-                            except ValueError:
-                                ac.value = val
-                                ac.alignment = ALIGN_RIGHT
-                        elif col_idx == 6:
-                            ac.value = val
-                            ac.alignment = ALIGN_CENTER
-                            ac.font = Font(bold=True, size=10, color="B91C1C", name="Calibri")
-                        elif col_idx == 1:
-                            ac.value = val
-                            ac.alignment = ALIGN_CENTER
-                        else:
-                            ac.value = val
-                            ac.alignment = ALIGN_LEFT_WRAP
 
         # Auto-fit Column Widths cleanly (respecting wrap cap)
         for col_idx in range(1, num_cols + 1):
@@ -1874,11 +1844,6 @@ def build_excel(
                 if col_idx - 1 < len(r):
                     val_str = str(r[col_idx - 1] if r[col_idx - 1] is not None else "")
                     max_len = max(max_len, len(val_str))
-            if t in ("waste_trends", "environmental_impact") and col_idx - 1 < len(FLAGGED_AUDIT_HEADERS):
-                max_len = max(max_len, len(FLAGGED_AUDIT_HEADERS[col_idx - 1]))
-                for ar in flagged_rows:
-                    if col_idx - 1 < len(ar):
-                        max_len = max(max_len, len(str(ar[col_idx - 1] or "")))
             cap = 44 if col_idx in (3, 7, 8, 9) else 34
             ws.column_dimensions[col_letter].width = min(max(max_len + 4, 15), cap)
 
@@ -2081,11 +2046,11 @@ def _build_pdf_section_banner(
     )
     card = Table([[head_p], [about_p], [insight_p]], colWidths=[_CONTENT_W])
     card.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EFF6FF")),
-        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#F8FAFC")),
-        ("LINEBEFORE", (0, 0), (0, -1), 3.0, _COLOR_BLUE),
-        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#BFDBFE")),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor("#DBEAFE")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F8FAFC")),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#FFFFFF")),
+        ("LINEBEFORE", (0, 0), (0, -1), 2.5, _COLOR_BLUE),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.4, colors.HexColor("#E2E8F0")),
         ("TOPPADDING", (0, 0), (-1, 0), 5),
         ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
         ("TOPPADDING", (0, 1), (-1, -1), 3),
@@ -2157,6 +2122,55 @@ def _style_pdf_cell(val_str: str, styles: dict, align_override=None) -> Paragrap
     return Paragraph(_xml_escape(val_str), cell_style)
 
 
+def _select_pdf_kpi_cards(types: list[str], summary: dict, data: dict[str, list[list]]) -> list[tuple[str, str, str, str]]:
+    """Build KPI cards matching ONLY the report types selected by the user."""
+    selected = set(types)
+    include_ops = bool(selected & _OP_REPORT_TYPES)
+    include_waste = bool(selected & _WASTE_REPORT_TYPES)
+    include_notif = bool(selected & _NOTIF_REPORT_TYPES)
+
+    if include_waste and not include_ops and not include_notif:
+        return [
+            ("Total Classified", str(summary["waste_classifications"]), "#F8FAFC", "#0F172A"),
+            ("Verified Scans", str(summary["verified_count"]), "#ECFDF5", "#047857"),
+            ("Flagged Items", str(summary["flagged_count"]), "#FEF2F2", "#B91C1C"),
+            ("Flagged Rate", f"{summary['flagged_rate']:.1f}%", "#FFFBEB", "#B45309"),
+            ("Recycling Rate", f"{summary['recycling_rate']:.1f}%", "#EFF6FF", "#1D4ED8"),
+            ("Avg AI Accuracy", f"{summary['avg_confidence']:.1f}%" if summary["avg_confidence"] is not None else "—", "#F8FAFC", "#334155"),
+        ]
+    if include_notif and not include_ops and not include_waste:
+        notif_rows = data.get("notification_analytics") or data.get("notification_effectiveness") or []
+        sent = sum(int(r[1] or 0) for r in notif_rows)
+        reads = sum(int(r[2] or 0) for r in notif_rows)
+        bread = sum(int(r[3] or 0) for r in notif_rows)
+        eng = round(bread / sent * 100, 1) if sent > 0 else 0.0
+        return [
+            ("Total Broadcasts", str(sent), "#EFF6FF", "#1D4ED8"),
+            ("Citizen Reads", str(reads), "#ECFDF5", "#047857"),
+            ("Broadcasts Read", str(bread), "#F5F3FF", "#6D28D9"),
+            ("Engagement Rate", f"{eng:.1f}%", "#ECFEFF", "#0E7490"),
+            ("Categories", str(len(notif_rows)), "#F8FAFC", "#334155"),
+            ("New Citizens", str(summary["new_users"]), "#F8FAFC", "#0F172A"),
+        ]
+    if include_ops and not include_waste:
+        return [
+            ("Total Routes", str(summary["total_collections"]), "#EFF6FF", "#1D4ED8"),
+            ("Completed Routes", str(summary["completed_collections"]), "#ECFDF5", "#047857"),
+            ("Delayed Routes", str(summary["delayed_collections"]), "#FFFBEB", "#B45309"),
+            ("Cancelled Routes", str(summary["cancelled_collections"]), "#FEF2F2", "#B91C1C"),
+            ("Completion Rate", f"{summary['completion_rate']:.1f}%", "#F5F3FF", "#6D28D9"),
+            ("Active Barangays", str(summary["total_barangays"]), "#F8FAFC", "#0F172A"),
+        ]
+    return [
+        ("Total Routes", str(summary["total_collections"]), "#EFF6FF", "#1D4ED8"),
+        ("Completed Routes", str(summary["completed_collections"]), "#ECFDF5", "#047857"),
+        ("Completion Rate", f"{summary['completion_rate']:.1f}%", "#F5F3FF", "#6D28D9"),
+        ("Total Waste Scans", str(summary["waste_classifications"]), "#ECFEFF", "#0E7490"),
+        ("Flagged Scans", f"{summary['flagged_count']} ({summary['flagged_rate']:.1f}%)", "#FEF2F2", "#B91C1C"),
+        ("Avg AI Accuracy", f"{summary['avg_confidence']:.1f}%" if summary["avg_confidence"] is not None else "—", "#F8FAFC", "#334155"),
+    ]
+
+
 def build_pdf(
     db: Session,
     year: int,
@@ -2164,14 +2178,13 @@ def build_pdf(
     types: list[str],
     generated_at: datetime | None = None,
 ) -> bytes:
-    """Generate a clean, professional landscape A4 PDF report with narrative context and totals."""
+    """Generate a clean, professional landscape A4 PDF report with scoped narratives and totals."""
     generated_at = generated_at or ph_now()
     start_ph, end_ph = resolve_period(year, month)
     summary = get_report_summary_data(db, year, month)
     data = _data_for(db, start_ph, end_ph, types)
     label = period_label(year, month)
-    needs_flagged_audit = any(t in ("waste_trends", "environmental_impact") for t in types)
-    flagged_rows = _flagged_waste_audit_rows(db, start_ph, end_ph) if needs_flagged_audit else []
+    include_ops = bool(set(types) & _OP_REPORT_TYPES)
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -2245,16 +2258,9 @@ def build_pdf(
     story.append(Paragraph("City Waste Management & Operations Report", styles["DocTitle"]))
     story.append(Paragraph(f"Reporting Period: {label} · Executive Administrative Performance Overview", styles["DocSub"]))
 
-    # 2. Executive Metric Cards (6 KPI Cards in a row)
-    card_width = (_CONTENT_W / 6) - 2 * mm
-    cards_data = [
-        ("Total Routes", str(summary["total_collections"]), "#EFF6FF", "#1D4ED8"),
-        ("Completed Routes", str(summary["completed_collections"]), "#ECFDF5", "#047857"),
-        ("Completion Rate", f"{summary['completion_rate']:.1f}%", "#F5F3FF", "#6D28D9"),
-        ("Total Waste Scans", str(summary["waste_classifications"]), "#ECFEFF", "#0E7490"),
-        ("Flagged Scans", f"{summary['flagged_count']} ({summary['flagged_rate']:.1f}%)", "#FEF2F2", "#B91C1C"),
-        ("Avg AI Accuracy", f"{summary['avg_confidence']:.1f}%" if summary["avg_confidence"] is not None else "—", "#FFFBEB", "#B45309"),
-    ]
+    # 2. Executive Metric Cards (scoped to selected report types)
+    cards_data = _select_pdf_kpi_cards(types, summary, data)
+    card_width = (_CONTENT_W / len(cards_data)) - 2 * mm
 
     card_cells = []
     for lbl, val, bg_color, text_color in cards_data:
@@ -2266,6 +2272,7 @@ def build_pdf(
         )
         card_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(bg_color)),
+            ("BOX", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("TOPPADDING", (0, 0), (-1, -1), 1.5),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
@@ -2275,7 +2282,7 @@ def build_pdf(
         ]))
         card_cells.append(card_table)
 
-    cards_row = Table([card_cells], colWidths=[_CONTENT_W / 6] * 6, rowHeights=[12.5 * mm])
+    cards_row = Table([card_cells], colWidths=[_CONTENT_W / len(cards_data)] * len(cards_data), rowHeights=[12.5 * mm])
     cards_row.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 1),
@@ -2286,14 +2293,14 @@ def build_pdf(
     story.append(cards_row)
     story.append(Spacer(1, 6))
 
-    # Executive Narrative Brief Box
+    # Executive Narrative Brief Box (covers only selected sections)
     story.append(
         _build_pdf_callout_box(
-            f"Executive Narrative Brief — {label}",
-            get_executive_narrative(summary),
-            "#EFF6FF",
+            f"Executive Summary — {label}",
+            get_executive_narrative(summary, types, data),
+            "#F8FAFC",
             "#1E40AF",
-            "#0F172A",
+            "#334155",
             styles,
         )
     )
@@ -2388,189 +2395,140 @@ def build_pdf(
         story.append(table)
         story.append(Spacer(1, 8))
 
-        # Waste Classification Flagged Meaning + Audit Log
+        # Waste Classification overall Flagged summary & explanation (no redundant audit table)
         if t in ("waste_trends", "environmental_impact"):
             story.append(
                 _build_pdf_callout_box(
-                    "Understanding Flagged Waste Classifications",
-                    FLAGGED_EXPLANATION_TEXT,
-                    "#FFFBEB",
-                    "#D97706",
-                    "#78350F",
+                    "Overall Classification Quality & What 'Flagged' Means",
+                    f"{_overall_waste_flag_summary_text(summary)} — {FLAGGED_EXPLANATION_TEXT}",
+                    "#F8FAFC",
+                    "#64748B",
+                    "#334155",
                     styles,
                 )
             )
-            story.append(Spacer(1, 7))
-            story.append(
-                Paragraph(
-                    f"Flagged Classifications Audit Log ({len(flagged_rows)} record{'s' if len(flagged_rows) != 1 else ''})",
-                    styles["SecHeader"],
-                )
-            )
-            audit_props = [24, 34, 24, 16, 36, 22]
-            audit_tot_p = sum(audit_props)
-            audit_widths = [(p / audit_tot_p) * _CONTENT_W for p in audit_props]
-            audit_table_rows = [[Paragraph(h, styles["TH"]) for h in FLAGGED_AUDIT_HEADERS]]
-            if not flagged_rows:
-                audit_table_rows.append(
-                    [Paragraph("Zero flagged classifications recorded in this period. All AI scans met quality checks.", styles["Empty"])]
-                    + [""] * (len(FLAGGED_AUDIT_HEADERS) - 1)
-                )
-            else:
-                for a_row in flagged_rows:
-                    a_cells = []
-                    for c_i, val in enumerate(a_row):
-                        v_s = str(val) if val is not None else "—"
-                        if c_i == 0:
-                            a_cells.append(_style_pdf_cell(v_s, styles, styles["TD_C"]))
-                        elif c_i == 3:
-                            a_cells.append(_style_pdf_cell(v_s, styles, styles["TD_R"]))
-                        else:
-                            a_cells.append(_style_pdf_cell(v_s, styles))
-                    audit_table_rows.append(a_cells)
-
-            audit_tbl = Table(audit_table_rows, colWidths=audit_widths, repeatRows=1)
-            audit_cmds = [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#92400E")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), _COLOR_WHITE),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("GRID", (0, 0), (-1, -1), 0.4, _COLOR_BORDER),
-                ("LINEBELOW", (0, 0), (-1, 0), 1.1, colors.HexColor("#D97706")),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ("LEFTPADDING", (0, 0), (-1, -1), 3.5),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 3.5),
-            ]
-            if flagged_rows:
-                for r_i in range(1, len(audit_table_rows)):
-                    if r_i % 2 == 0:
-                        audit_cmds.append(("BACKGROUND", (0, r_i), (-1, r_i), _COLOR_ALT_ROW))
-            else:
-                audit_cmds.append(("SPAN", (0, 1), (-1, 1)))
-                audit_cmds.append(("ALIGN", (0, 1), (-1, 1), "CENTER"))
-            audit_tbl.setStyle(TableStyle(audit_cmds))
-            story.append(audit_tbl)
             story.append(Spacer(1, 8))
 
-    # 4. Collector Personnel Assignment & Operational Status Section (PDF-only)
-    collector_pdf = _collector_pdf_report_data(db, start_ph, end_ph)
-    roster_headers = collector_pdf["roster_headers"]
-    roster_rows = collector_pdf["roster_rows"]
-    route_log_headers = collector_pdf["route_log_headers"]
-    route_log_rows = collector_pdf["route_log_rows"]
-    col_narrative = get_section_narratives("collector_operations", label, summary, [], collector_pdf=collector_pdf)
+    # 4. Collector Personnel Assignment & Operational Status Section (only when operations reports are selected)
+    if include_ops:
+        collector_pdf = _collector_pdf_report_data(db, start_ph, end_ph)
+        roster_headers = collector_pdf["roster_headers"]
+        roster_rows = collector_pdf["roster_rows"]
+        route_log_headers = collector_pdf["route_log_headers"]
+        route_log_rows = collector_pdf["route_log_rows"]
+        col_narrative = get_section_narratives("collector_operations", label, summary, [], collector_pdf=collector_pdf)
 
-    story.append(PageBreak())
-    col_banner = _build_pdf_section_banner(
-        "Collector Personnel Assignment & Operational Status",
-        f"{len(roster_rows)} Collector(s) · {len(route_log_rows)} Assigned Route(s) · {label}",
-        col_narrative["about"],
-        col_narrative["insight"],
-        styles,
-    )
-    story.append(KeepTogether([col_banner, Spacer(1, 6)]))
-
-    # 4A. Collector Roster & Workload Status Summary Table
-    roster_props = [26, 30, 28, 16, 15, 16, 20, 17, 22]
-    roster_tot_p = sum(roster_props)
-    roster_col_widths = [(p / roster_tot_p) * _CONTENT_W for p in roster_props]
-
-    roster_table_rows = [[Paragraph(h, styles["TH"]) for h in roster_headers]]
-    if not roster_rows:
-        roster_table_rows.append(
-            [Paragraph("No registered collectors or assigned personnel found for the selected period.", styles["Empty"])]
-            + [""] * (len(roster_headers) - 1)
+        story.append(PageBreak())
+        col_banner = _build_pdf_section_banner(
+            "Collector Personnel Assignment & Operational Status",
+            f"{len(roster_rows)} Collector(s) · {len(route_log_rows)} Assigned Route(s) · {label}",
+            col_narrative["about"],
+            col_narrative["insight"],
+            styles,
         )
-    else:
-        for row in roster_rows:
-            cells = []
-            for c_idx, val in enumerate(row):
-                val_str = str(val) if val is not None else "—"
-                if c_idx in (3, 4, 7):
-                    c_style = styles["TD_R"]
-                elif c_idx in (5, 6, 8):
-                    c_style = styles["TD_C"]
-                else:
-                    c_style = styles["TD_L"]
-                cells.append(_style_pdf_cell(val_str, styles, c_style))
-            roster_table_rows.append(cells)
+        story.append(KeepTogether([col_banner, Spacer(1, 6)]))
 
-    roster_table = Table(roster_table_rows, colWidths=roster_col_widths, repeatRows=1)
-    roster_style_cmds = [
-        ("BACKGROUND", (0, 0), (-1, 0), _COLOR_BLUE),
-        ("TEXTCOLOR", (0, 0), (-1, 0), _COLOR_WHITE),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.4, _COLOR_BORDER),
-        ("LINEBELOW", (0, 0), (-1, 0), 1.2, _COLOR_ACCENT),
-        ("TOPPADDING", (0, 0), (-1, -1), 3.2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3.2),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3.5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3.5),
-    ]
-    if roster_rows:
-        for r_i in range(1, len(roster_table_rows)):
-            if r_i % 2 == 0:
-                roster_style_cmds.append(("BACKGROUND", (0, r_i), (-1, r_i), _COLOR_ALT_ROW))
-    else:
-        roster_style_cmds.append(("SPAN", (0, 1), (-1, 1)))
-        roster_style_cmds.append(("ALIGN", (0, 1), (-1, 1), "CENTER"))
-    roster_table.setStyle(TableStyle(roster_style_cmds))
-    story.append(roster_table)
-    story.append(Spacer(1, 12))
+        # 4A. Collector Roster & Workload Status Summary Table
+        roster_props = [26, 30, 28, 16, 15, 16, 20, 17, 22]
+        roster_tot_p = sum(roster_props)
+        roster_col_widths = [(p / roster_tot_p) * _CONTENT_W for p in roster_props]
 
-    # 4B. Assigned Collector Route & Stop Confirmation Log Table
-    story.append(Paragraph("Assigned Collector Route & Stop Confirmation Log", styles["SecHeader"]))
-    story.append(
-        Paragraph(
-            f"Detailed stop-level arrival confirmation and field verification remarks per assigned collector for {label}.",
-            styles["SecSub"],
+        roster_table_rows = [[Paragraph(h, styles["TH"]) for h in roster_headers]]
+        if not roster_rows:
+            roster_table_rows.append(
+                [Paragraph("No registered collectors or assigned personnel found for the selected period.", styles["Empty"])]
+                + [""] * (len(roster_headers) - 1)
+            )
+        else:
+            for row in roster_rows:
+                cells = []
+                for c_idx, val in enumerate(row):
+                    val_str = str(val) if val is not None else "—"
+                    if c_idx in (3, 4, 7):
+                        c_style = styles["TD_R"]
+                    elif c_idx in (5, 6, 8):
+                        c_style = styles["TD_C"]
+                    else:
+                        c_style = styles["TD_L"]
+                    cells.append(_style_pdf_cell(val_str, styles, c_style))
+                roster_table_rows.append(cells)
+
+        roster_table = Table(roster_table_rows, colWidths=roster_col_widths, repeatRows=1)
+        roster_style_cmds = [
+            ("BACKGROUND", (0, 0), (-1, 0), _COLOR_BLUE),
+            ("TEXTCOLOR", (0, 0), (-1, 0), _COLOR_WHITE),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.4, _COLOR_BORDER),
+            ("LINEBELOW", (0, 0), (-1, 0), 1.2, _COLOR_ACCENT),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3.5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3.5),
+        ]
+        if roster_rows:
+            for r_i in range(1, len(roster_table_rows)):
+                if r_i % 2 == 0:
+                    roster_style_cmds.append(("BACKGROUND", (0, r_i), (-1, r_i), _COLOR_ALT_ROW))
+        else:
+            roster_style_cmds.append(("SPAN", (0, 1), (-1, 1)))
+            roster_style_cmds.append(("ALIGN", (0, 1), (-1, 1), "CENTER"))
+        roster_table.setStyle(TableStyle(roster_style_cmds))
+        story.append(roster_table)
+        story.append(Spacer(1, 12))
+
+        # 4B. Assigned Collector Route & Stop Confirmation Log Table
+        story.append(Paragraph("Assigned Collector Route & Stop Confirmation Log", styles["SecHeader"]))
+        story.append(
+            Paragraph(
+                f"Detailed stop-level arrival confirmation and field verification remarks per assigned collector for {label}.",
+                styles["SecSub"],
+            )
         )
-    )
 
-    log_props = [22, 26, 26, 26, 22, 18, 42]
-    log_tot_p = sum(log_props)
-    log_col_widths = [(p / log_tot_p) * _CONTENT_W for p in log_props]
+        log_props = [22, 26, 26, 26, 22, 18, 42]
+        log_tot_p = sum(log_props)
+        log_col_widths = [(p / log_tot_p) * _CONTENT_W for p in log_props]
 
-    log_table_rows = [[Paragraph(h, styles["TH"]) for h in route_log_headers]]
-    if not route_log_rows:
-        log_table_rows.append(
-            [Paragraph("No scheduled collection routes found for the selected period.", styles["Empty"])]
-            + [""] * (len(route_log_headers) - 1)
-        )
-    else:
-        for row in route_log_rows:
-            cells = []
-            for c_idx, val in enumerate(row):
-                val_str = str(val) if val is not None else "—"
-                if c_idx in (0, 4, 5):
-                    c_style = styles["TD_C"]
-                else:
-                    c_style = styles["TD_L"]
-                cells.append(_style_pdf_cell(val_str, styles, c_style))
-            log_table_rows.append(cells)
+        log_table_rows = [[Paragraph(h, styles["TH"]) for h in route_log_headers]]
+        if not route_log_rows:
+            log_table_rows.append(
+                [Paragraph("No scheduled collection routes found for the selected period.", styles["Empty"])]
+                + [""] * (len(route_log_headers) - 1)
+            )
+        else:
+            for row in route_log_rows:
+                cells = []
+                for c_idx, val in enumerate(row):
+                    val_str = str(val) if val is not None else "—"
+                    if c_idx in (0, 4, 5):
+                        c_style = styles["TD_C"]
+                    else:
+                        c_style = styles["TD_L"]
+                    cells.append(_style_pdf_cell(val_str, styles, c_style))
+                log_table_rows.append(cells)
 
-    log_table = Table(log_table_rows, colWidths=log_col_widths, repeatRows=1)
-    log_style_cmds = [
-        ("BACKGROUND", (0, 0), (-1, 0), _COLOR_BLUE),
-        ("TEXTCOLOR", (0, 0), (-1, 0), _COLOR_WHITE),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.4, _COLOR_BORDER),
-        ("LINEBELOW", (0, 0), (-1, 0), 1.2, _COLOR_ACCENT),
-        ("TOPPADDING", (0, 0), (-1, -1), 3.2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3.2),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3.5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3.5),
-    ]
-    if route_log_rows:
-        for r_i in range(1, len(log_table_rows)):
-            if r_i % 2 == 0:
-                log_style_cmds.append(("BACKGROUND", (0, r_i), (-1, r_i), _COLOR_ALT_ROW))
-    else:
-        log_style_cmds.append(("SPAN", (0, 1), (-1, 1)))
-        log_style_cmds.append(("ALIGN", (0, 1), (-1, 1), "CENTER"))
-    log_table.setStyle(TableStyle(log_style_cmds))
-    story.append(log_table)
-    story.append(Spacer(1, 10))
+        log_table = Table(log_table_rows, colWidths=log_col_widths, repeatRows=1)
+        log_style_cmds = [
+            ("BACKGROUND", (0, 0), (-1, 0), _COLOR_BLUE),
+            ("TEXTCOLOR", (0, 0), (-1, 0), _COLOR_WHITE),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.4, _COLOR_BORDER),
+            ("LINEBELOW", (0, 0), (-1, 0), 1.2, _COLOR_ACCENT),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3.5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3.5),
+        ]
+        if route_log_rows:
+            for r_i in range(1, len(log_table_rows)):
+                if r_i % 2 == 0:
+                    log_style_cmds.append(("BACKGROUND", (0, r_i), (-1, r_i), _COLOR_ALT_ROW))
+        else:
+            log_style_cmds.append(("SPAN", (0, 1), (-1, 1)))
+            log_style_cmds.append(("ALIGN", (0, 1), (-1, 1), "CENTER"))
+        log_table.setStyle(TableStyle(log_style_cmds))
+        story.append(log_table)
+        story.append(Spacer(1, 10))
 
     def canvas_maker(*args, **kwargs):
         c = NumberedCanvas(*args, **kwargs)
