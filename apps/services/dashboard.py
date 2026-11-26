@@ -85,7 +85,6 @@ def get_monthly_dashboard_stats(db: Session, year: int, month: int):
     """Month-scoped stats feeding the dashboard line + pie charts.
 
     `records_by_day` / `records_by_class_by_day` -> daily counts for the trend line.
-    `records_by_hour` / `records_by_class_by_hour` -> 0-23 PH hour counts for the trend line.
     `per_class` -> {waste_type: count} for the pie/donut.
     Notifications and collection routes are also scoped to the month.
     """
@@ -137,26 +136,6 @@ def get_monthly_dashboard_stats(db: Session, year: int, month: int):
     for r in class_day_rows:
         records_by_class_by_day.setdefault(r.waste_type, {})[int(r.day)] = int(r.cnt)
 
-    # Hourly counts (0-23 Asia/Manila time) -> line chart "By Hour" view
-    hour_rows = db.query(
-        WasteRecord.classified_at,
-        WasteRecord.waste_type,
-    ).filter(
-        WasteRecord.classified_at >= start,
-        WasteRecord.classified_at <= end,
-    ).all()
-
-    records_by_hour: dict[int, int] = {}
-    records_by_class_by_hour: dict[str, dict[int, int]] = {}
-    for r in hour_rows:
-        if r.classified_at is None:
-            continue
-        ph_hour = (r.classified_at + timedelta(hours=8)).hour
-        records_by_hour[ph_hour] = records_by_hour.get(ph_hour, 0) + 1
-        if r.waste_type:
-            class_hours = records_by_class_by_hour.setdefault(r.waste_type, {})
-            class_hours[ph_hour] = class_hours.get(ph_hour, 0) + 1
-
     # Avg AI confidence for the month
     avg_confidence = db.query(func.avg(WasteRecord.confidence)).filter(
         WasteRecord.confidence.isnot(None),
@@ -189,8 +168,6 @@ def get_monthly_dashboard_stats(db: Session, year: int, month: int):
         "per_class": per_class,
         "records_by_day": records_by_day,
         "records_by_class_by_day": records_by_class_by_day,
-        "records_by_hour": records_by_hour,
-        "records_by_class_by_hour": records_by_class_by_hour,
         "avg_confidence": round(float(avg_confidence), 1) if avg_confidence is not None else None,
         "total_routes": total_routes,
         "upcoming_routes": upcoming_routes,
